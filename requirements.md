@@ -278,7 +278,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 
 | # | Milestone | Ticket | Scope | Visible output (done when) | Depends on |
 | --- | --- | --- | --- | --- | --- |
-| 1 | M1 Hello Drive | Project skeleton | Go module, `cmd/syncd`, `internal/{sync,store,drive}`, Makefile, CI running `go vet` and `go test -race` | `syncd version` prints a version; CI is green | – |
+| 1 | M1 Hello Drive | Project skeleton | Go module, `cmd/syncd`, `internal/{sync,store,drive}`, Makefile with `go vet` and `go test -race` targets (no CI workflow) | `syncd version` prints a version; `make vet test` passes locally | – |
 | 2 | M1 Hello Drive | Google Cloud setup | Cloud project, Drive API on, desktop OAuth client, `drive.file` scope, consent screen "In production" | Client ID committed to config; setup steps in README | – |
 | 3 | M1 Hello Drive | OAuth login command | `syncd login`: loopback redirect with PKCE via `x/oauth2` and a local listener | Browser opens, terminal prints the signed-in email | 1, 2 |
 | 4 | M1 Hello Drive | Keychain token storage | Save the refresh token with `go-keyring`; `syncd logout` clears it | `syncd whoami` works after a restart without signing in again | 3 |

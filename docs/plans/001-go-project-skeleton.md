@@ -11,11 +11,10 @@ Slices are vertical: review and confirm after each one.
 | 1 | **Slice 1: `syncd version` works end to end** | `go mod init github.com/amitavroy/burrow`; pin the Go version in `go.mod` | [x] |
 | 2 | | Add `cmd/syncd/main.go` with a `version` subcommand and a `Version` var set via `-ldflags` | [x] |
 | 3 | | Add `Makefile` with `build`, `vet`, `test` targets (build writes `bin/syncd`); add `.gitignore` for `bin/` | [x] |
-| 4 | | Demo: `make build && ./bin/syncd version` prints a version. **Review point.** | [ ] |
-| 5 | **Slice 2: layout and green CI** | Add `internal/{sync,store,drive}/doc.go` (package stubs, no logic) | [ ] |
-| 6 | | Add a smoke test (e.g. `cmd/syncd` version output) so `go test -race ./...` runs a real test | [ ] |
-| 7 | | Add `.github/workflows/ci.yml` running `go vet ./...` and `go test -race ./...` on push and PR | [ ] |
-| 8 | | Demo: CI is green on the pushed branch. **Review point.** | [ ] |
+| 4 | | Demo: `make build && ./bin/syncd version` prints a version. **Review point.** | [x] |
+| 5 | **Slice 2: layout and passing tests** | Add `internal/{sync,store,drive}/doc.go` (package stubs, no logic) | [x] |
+| 6 | | Add a smoke test (e.g. `cmd/syncd` version output) so `go test -race ./...` runs a real test | [x] |
+| 7 | | Demo: `make vet test` is clean and passes locally. **Review point.** | [ ] |
 
 ## Context
 
@@ -28,7 +27,7 @@ The repo currently holds only `requirements.md` and `CLAUDE.md`. Every later tic
 3. **No CLI framework yet.** `syncd` dispatches on `os.Args[1]` with a plain switch. Later subcommands (`login`, `put`, `sync`, ...) are added one ticket at a time. Revisit if the surface gets unwieldy; this avoids a dependency the requirements do not list.
 4. **Version via `-ldflags`.** `var Version = "dev"` in `main`, overridden with `-ldflags "-X main.Version=$(VERSION)"`, where the Makefile derives `VERSION` from `git describe --tags --always --dirty`. A plain `go build` still prints `dev`.
 5. **No third-party dependencies in this ticket.** `go.mod` has only the module and Go version lines. Dependencies arrive with the tickets that use them.
-6. **CI runs exactly what CLAUDE.md says:** `go vet ./...` and `go test -race ./...`. The race detector is required by the goroutine-ownership design. The Go version comes from `go.mod` (`go-version-file`), so there is one place to bump it.
+6. **No CI workflow.** Checks run locally through the Makefile: `make vet` and `make test` (`go vet ./...` and `go test -race ./...`). The race detector is required by the goroutine-ownership design. A GitHub Actions workflow was dropped from scope by choice; it can be added later if wanted.
 7. **Stub packages carry a `doc.go`** with a package comment describing the package's job. This makes the packages compile and show up in `go vet`, without inventing APIs.
 
 ## Layout
@@ -42,7 +41,6 @@ cmd/syncd/main_test.go
 internal/sync/doc.go
 internal/store/doc.go
 internal/drive/doc.go
-.github/workflows/ci.yml
 ```
 
 `cmd/syncd/main.go` (shape):
@@ -93,8 +91,6 @@ test:
 	go test -race ./...
 ```
 
-`.github/workflows/ci.yml` (shape): trigger on `push` and `pull_request`; steps are `actions/checkout`, `actions/setup-go` with `go-version-file: go.mod`, `go vet ./...`, `go test -race ./...`.
-
 ## Files to create/modify
 
 | File | Change |
@@ -107,7 +103,6 @@ test:
 | `internal/drive/doc.go` | Create: package stub |
 | `Makefile` | Create: `build`, `vet`, `test` |
 | `.gitignore` | Create: ignore `bin/` |
-| `.github/workflows/ci.yml` | Create: vet and race tests |
 | `CLAUDE.md` | Update "Status" and "Planned commands": the module now exists and these commands are verified |
 
 ## Testing plan
@@ -123,4 +118,4 @@ Table-driven test of `run` in `cmd/syncd/main_test.go`:
 1. `make build && ./bin/syncd version` prints a version (a `git describe` string, or `dev` with a plain `go build`).
 2. `go vet ./...` is clean.
 3. `go test -race ./...` passes.
-4. Push the branch: the CI workflow runs and is green (the ticket's acceptance criterion).
+4. `make vet test` runs both checks locally (the ticket's acceptance criterion, in place of green CI).

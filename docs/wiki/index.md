@@ -29,3 +29,31 @@ Keep two processes:
 - The control API is needed anyway for `syncd ctl status`, so the split adds little extra work.
 - Tickets 1 to 32 are daemon and CLI only and do not depend on this decision.
 - If a single binary is wanted later, only tickets 33 to 36 change. The cost would be cgo in the main binary and a UI crash taking sync down.
+
+### ADR-002: No CI workflow; run checks locally
+
+- **Status:** Accepted
+- **Date:** 2026-10-03
+
+**Context**
+
+Ticket 1 originally included a GitHub Actions workflow running `go vet ./...` and `go test -race ./...` on every push and PR, with "CI is green" as part of its acceptance criterion.
+
+This is a single-developer project and the checks are fast, so a hosted CI workflow adds setup and upkeep without adding much safety.
+
+**Decision**
+
+Do not add a CI workflow. The same checks run locally through the Makefile:
+
+- `make vet` runs `go vet ./...`.
+- `make test` runs `go test -race ./...`. The race detector stays required because of the goroutine-ownership design.
+
+Ticket 1 is done when `syncd version` prints a version and `make vet test` passes locally.
+
+**Consequences**
+
+- Nothing enforces the checks on push, so they must be run before committing or merging.
+- A workflow can be added later without touching the code. The Makefile targets are the single definition of the checks, so a workflow would only call them.
+- `requirements.md` (ticket 1 row), `CLAUDE.md` and the GH-1 plan doc were updated to match.
+- The GitHub issue for ticket 1 still mentions CI and needs the same update.
+- Ticket 37 (release builds) is unaffected. It still uses a GitHub release as the distribution point.

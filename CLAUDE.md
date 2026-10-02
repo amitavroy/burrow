@@ -8,7 +8,7 @@ Pre-code. The repo contains only `requirements.md`, the source of truth for scop
 
 ## Planned commands
 
-- `go vet ./...` and `go test -race ./...` (CI runs both; the race detector is required because of the goroutine-ownership design)
+- `go vet ./...` and `go test -race ./...` (`make vet` and `make test` run them locally; there is no CI workflow, see ADR-002; the race detector is required because of the goroutine-ownership design)
 - Single test: `go test -race -run TestName ./internal/store/`
 - Local debug logging: `SYNC_LOG=debug syncd run`
 - CLI surface is the dev interface, built before any UI: `syncd login|logout|whoami|put|stat|scan --dry-run|sync|history|watch|run|errors|restore --root|remote ls|ctl status`
