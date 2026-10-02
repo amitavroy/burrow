@@ -8,9 +8,9 @@ Slices are vertical: review and confirm after each one.
 
 | # | Slice | Step | Done |
 | --- | --- | --- | --- |
-| 1 | **Slice 1: `syncd version` works end to end** | `go mod init github.com/amitavroy/burrow`; pin the Go version in `go.mod` | [ ] |
-| 2 | | Add `cmd/syncd/main.go` with a `version` subcommand and a `Version` var set via `-ldflags` | [ ] |
-| 3 | | Add `Makefile` with `build`, `vet`, `test` targets (build writes `bin/syncd`); add `.gitignore` for `bin/` | [ ] |
+| 1 | **Slice 1: `syncd version` works end to end** | `go mod init github.com/amitavroy/burrow`; pin the Go version in `go.mod` | [x] |
+| 2 | | Add `cmd/syncd/main.go` with a `version` subcommand and a `Version` var set via `-ldflags` | [x] |
+| 3 | | Add `Makefile` with `build`, `vet`, `test` targets (build writes `bin/syncd`); add `.gitignore` for `bin/` | [x] |
 | 4 | | Demo: `make build && ./bin/syncd version` prints a version. **Review point.** | [ ] |
 | 5 | **Slice 2: layout and green CI** | Add `internal/{sync,store,drive}/doc.go` (package stubs, no logic) | [ ] |
 | 6 | | Add a smoke test (e.g. `cmd/syncd` version output) so `go test -race ./...` runs a real test | [ ] |
