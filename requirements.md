@@ -218,6 +218,8 @@ internal/drive/ # Drive client and auth
 
 The whole engine can then be built and tested through a CLI before any UI exists.
 
+**Decision (ADR-001, 2026-10-02): keep the daemon and the UI as two processes**, even though Go is lighter than the Rust design this was first written for. The UI toolkit drives memory use, not the sync engine. `fyne.io/systray` needs cgo, and keeping it out of `syncd` leaves the daemon pure Go and easy to cross-compile. A UI crash also must not stop syncing. The control API is needed anyway for `syncd ctl status`. See `docs/wiki/index.md`, ADR section.
+
 ## 12. Non-functional requirements, risks and open questions
 
 **Non-functional requirements**
