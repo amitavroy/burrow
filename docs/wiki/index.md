@@ -58,6 +58,16 @@ Ticket 1 is done when `syncd version` prints a version and `make vet test` passe
 - The GitHub issue for ticket 1 still mentions CI and needs the same update.
 - Ticket 37 (release builds) is unaffected. It still uses a GitHub release as the distribution point.
 
+### ADR-003: OAuth client credentials come from .env, not source
+
+Date: 2026-10-03. Ticket: GH-2.
+
+- Decision: the client ID and secret are read from `BURROW_GOOGLE_CLIENT_ID` and `BURROW_GOOGLE_CLIENT_SECRET`. `.env` is git-ignored and `.env.example` is committed.
+- Why: Google treats a desktop client secret as non-confidential, but keeping it out of source is the safer default and lets the client be swapped without a code change.
+- `drive.LoadClient()` reads the variables. `syncd` loads `.env` at startup with `godotenv`, and real environment variables win.
+- The `drive.file` scope is a Go const, not configuration.
+- Consequence: a release binary has no `.env` beside it. Ticket 37 must inject the values with `-ldflags -X` at build time, with `.env` as the dev-time override.
+
 ## Development
 
 How to build and check the project locally. There is no CI (see ADR-002), so run the checks before committing or merging.
