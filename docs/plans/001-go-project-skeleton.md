@@ -14,7 +14,7 @@ Slices are vertical: review and confirm after each one.
 | 4 | | Demo: `make build && ./bin/syncd version` prints a version. **Review point.** | [x] |
 | 5 | **Slice 2: layout and passing tests** | Add `internal/{sync,store,drive}/doc.go` (package stubs, no logic) | [x] |
 | 6 | | Add a smoke test (e.g. `cmd/syncd` version output) so `go test -race ./...` runs a real test | [x] |
-| 7 | | Demo: `make vet test` is clean and passes locally. **Review point.** | [ ] |
+| 7 | | Demo: `make vet test` is clean and passes locally. **Review point.** | [x] |
 
 ## Context
 
