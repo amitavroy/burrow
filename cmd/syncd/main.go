@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/joho/godotenv"
+	"golang.org/x/oauth2"
 )
 
 // Version is overridden at build time via -ldflags "-X main.Version=...".
@@ -20,8 +22,17 @@ func main() {
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 
-// login signs in through the browser and prints the account email. The token
-// is not persisted yet (ticket 4).
+// persistToken stores the refresh token from a fresh sign-in. Only the refresh
+// token is kept; access tokens are re-derived by refreshing.
+func persistToken(store drive.TokenStore, tok *oauth2.Token) error {
+	if tok.RefreshToken == "" {
+		return errors.New("Google returned no refresh token; try signing in again")
+	}
+	return store.Save(tok.RefreshToken)
+}
+
+// login signs in through the browser, saves the refresh token to the keychain
+// and prints the account email.
 func login(stdout, stderr io.Writer) int {
 	client, err := drive.LoadClient()
 	if err != nil {
@@ -34,6 +45,11 @@ func login(stdout, stderr io.Writer) int {
 	tok, err := drive.Login(ctx, client, drive.LoginOptions{Out: stderr})
 	if err != nil {
 		fmt.Fprintf(stderr, "syncd: login failed: %v\n", err)
+		return 1
+	}
+	// Save before the email lookup so a flaky about.get doesn't waste the sign-in.
+	if err := persistToken(drive.KeyringStore{}, tok); err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
 		return 1
 	}
 	email, err := drive.Email(ctx, client, tok)
