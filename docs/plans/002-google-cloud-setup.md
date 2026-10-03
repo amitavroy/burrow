@@ -13,8 +13,8 @@ Slices are vertical: review and confirm after each one.
 | 3 | | Create an OAuth client of type "Desktop app"; copy the client ID and secret into a local `.env` | [x] |
 | 4 | | Review point: consent screen status reads "In production". **Review point.** | [x] |
 | 5 | **Slice 2: Credentials loaded from `.env`** | Add `.env.example` (placeholders) and add `.env` to `.gitignore` | [x] |
-| 6 | | Add `internal/drive/oauthclient.go`: `LoadClient()` and the `drive.file` scope const | [ ] |
-| 7 | | Add `internal/drive/oauthclient_test.go` (table-driven, `t.Setenv`) | [ ] |
+| 6 | | Add `internal/drive/oauthclient.go`: `LoadClient()` and the `drive.file` scope const | [x] |
+| 7 | | Add `internal/drive/oauthclient_test.go` (table-driven, `t.Setenv`) | [x] |
 | 8 | | Add `godotenv` and load `.env` best-effort at startup in `cmd/syncd` | [ ] |
 | 9 | | Demo: `make vet test` is clean. **Review point.** | [ ] |
 | 10 | **Slice 3: README and docs** | Add `README.md` with the Google Cloud setup steps and the `.env` copy step | [ ] |
