@@ -35,6 +35,15 @@ BURROW_GOOGLE_CLIENT_SECRET=<client secret>
 
 The client ID must never change once files have been uploaded. `drive.file` access is tied to the client ID, so a different client cannot see files created by the first one.
 
+## Sign in
+
+```
+make build
+bin/syncd login
+```
+
+Your browser opens to Google's consent screen (scope `drive.file` only). When you approve, the terminal prints `Signed in as <email>`. The token is not saved yet; keychain storage arrives with `syncd whoami` and `logout`.
+
 ## Development
 
 ```

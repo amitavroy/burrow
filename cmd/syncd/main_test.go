@@ -27,6 +27,12 @@ func TestRun(t *testing.T) {
 			wantStderr: "usage: syncd <command>",
 		},
 		{
+			name:       "login without client credentials fails",
+			args:       []string{"login"},
+			wantCode:   1,
+			wantStderr: "BURROW_GOOGLE_CLIENT_ID",
+		},
+		{
 			name:       "unknown command is an error",
 			args:       []string{"bogus"},
 			wantCode:   2,
@@ -36,6 +42,7 @@ func TestRun(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("BURROW_GOOGLE_CLIENT_ID", "")
 			var stdout, stderr bytes.Buffer
 
 			code := run(tt.args, &stdout, &stderr)
