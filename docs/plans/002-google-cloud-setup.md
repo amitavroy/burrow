@@ -15,10 +15,10 @@ Slices are vertical: review and confirm after each one.
 | 5 | **Slice 2: Credentials loaded from `.env`** | Add `.env.example` (placeholders) and add `.env` to `.gitignore` | [x] |
 | 6 | | Add `internal/drive/oauthclient.go`: `LoadClient()` and the `drive.file` scope const | [x] |
 | 7 | | Add `internal/drive/oauthclient_test.go` (table-driven, `t.Setenv`) | [x] |
-| 8 | | Add `godotenv` and load `.env` best-effort at startup in `cmd/syncd` | [ ] |
-| 9 | | Demo: `make vet test` is clean. **Review point.** | [ ] |
-| 10 | **Slice 3: README and docs** | Add `README.md` with the Google Cloud setup steps and the `.env` copy step | [ ] |
-| 11 | | Add `godotenv` to the stack table in `requirements.md` section 3; add a `.env` line to the wiki Development section | [ ] |
+| 8 | | Add `godotenv` and load `.env` best-effort at startup in `cmd/syncd` | [x] |
+| 9 | | Demo: `make vet test` is clean. **Review point.** | [x] |
+| 10 | **Slice 3: README and docs** | Add `README.md` with the Google Cloud setup steps and the `.env` copy step | [x] |
+| 11 | | Add `godotenv` to the stack table in `requirements.md` section 3; add a `.env` line to the wiki Development section | [x] |
 | 12 | | Demo: a fresh reader can follow the README to a working `.env`. **Review point.** | [ ] |
 
 ## Context

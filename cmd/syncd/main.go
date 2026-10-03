@@ -4,12 +4,18 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/joho/godotenv"
 )
 
 // Version is overridden at build time via -ldflags "-X main.Version=...".
 var Version = "dev"
 
-func main() { os.Exit(run(os.Args[1:], os.Stdout, os.Stderr)) }
+func main() {
+	// Best-effort: a missing .env is fine, and real environment variables win.
+	_ = godotenv.Load()
+	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+}
 
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {

@@ -51,6 +51,7 @@ File events are debounced, queued and uploaded by the sync worker, with the stat
 | Drive API | Official `google.golang.org/api/drive/v3` client, which includes resumable uploads |
 | OAuth (loopback, PKCE) | `golang.org/x/oauth2` plus a small local HTTP listener |
 | Keychain | `github.com/zalando/go-keyring` |
+| Local config (`.env`) | `github.com/joho/godotenv`, loads the OAuth client ID and secret in development |
 | State database | `modernc.org/sqlite` (pure Go, no C compiler needed) |
 | Migrations | `goose` or `golang-migrate` |
 | Hashing | `crypto/md5`, streamed with `io.Copy` |
