@@ -19,7 +19,7 @@ Slices are vertical: review and confirm after each one.
 | 9 | | Demo: `make vet test` is clean. **Review point.** | [x] |
 | 10 | **Slice 3: README and docs** | Add `README.md` with the Google Cloud setup steps and the `.env` copy step | [x] |
 | 11 | | Add `godotenv` to the stack table in `requirements.md` section 3; add a `.env` line to the wiki Development section | [x] |
-| 12 | | Demo: a fresh reader can follow the README to a working `.env`. **Review point.** | [ ] |
+| 12 | | Demo: a fresh reader can follow the README to a working `.env`. **Review point.** | [x] |
 
 ## Context
 
