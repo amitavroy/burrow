@@ -68,6 +68,25 @@ Date: 2026-10-03. Ticket: GH-2.
 - The `drive.file` scope is a Go const, not configuration.
 - Consequence: a release binary has no `.env` beside it. Ticket 37 must inject the values with `-ldflags -X` at build time, with `.env` as the dev-time override.
 
+## Sign-in
+
+`syncd login` signs the user in with Google. Rule: user OAuth with loopback redirect and PKCE, scope `drive.file` only.
+
+```
+syncd login
+  -> listen on 127.0.0.1:<random port>
+  -> open browser at the auth URL (S256 challenge, random state, access_type=offline, prompt=consent)
+  -> Google redirects to /callback?code&state
+  -> check state, exchange code with the PKCE verifier
+  -> Drive about.get (fields=user(emailAddress)) -> print "Signed in as <email>"
+```
+
+- The email comes from Drive `about.get`, not the userinfo endpoint, because userinfo needs a scope beyond `drive.file`.
+- `prompt=consent` makes Google return a refresh token on every sign-in, which ticket 4 will store.
+- Times out after 2 minutes or on Ctrl+C. The auth URL is always printed too, so it works on a box with no browser.
+- The token lives in memory only for now; keychain storage is ticket 4. Tokens and the auth code are never logged.
+- Code: `drive.Login` (`internal/drive/auth.go`), `drive.Email` (`internal/drive/about.go`).
+
 ## Development
 
 How to build and check the project locally. There is no CI (see ADR-002), so run the checks before committing or merging.
@@ -81,6 +100,7 @@ How to build and check the project locally. There is no CI (see ADR-002), so run
 ```
 syncd <command>
   version  -> prints Version (a git describe string, or "dev" with a plain go build)
+  login    -> browser sign-in (loopback + PKCE), prints "Signed in as <email>"; token not saved yet (ticket 4)
   (none)   -> usage on stderr, exit 2
   unknown  -> error on stderr, exit 2
 ```
