@@ -26,7 +26,7 @@ Vertical slices; review after each.
 | # | Slice | Step | Done |
 | --- | --- | --- | --- |
 | 1 | **Slice 1: login persists the token** | `go get github.com/zalando/go-keyring` | [x] |
-| 2 | | `internal/drive/tokenstore.go`: `TokenStore`, `KeyringStore`, `ErrNotSignedIn` | [ ] |
+| 2 | | `internal/drive/tokenstore.go`: `TokenStore`, `KeyringStore`, `ErrNotSignedIn` | [x] |
 | 3 | | `cmd/syncd/main.go`: `login` saves the refresh token after exchange; test with mock keyring that it is stored. **Review point.** | [ ] |
 | 4 | **Slice 2: `syncd whoami`** | `internal/drive/resume.go`: `TokenFromRefresh`, `Resume(ctx, client, store)` returning email via existing `drive.Email` | [ ] |
 | 5 | | `whoami` subcommand, error hints for not-signed-in / revoked / keychain unavailable | [ ] |

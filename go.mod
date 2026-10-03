@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/joho/godotenv v1.5.1
+	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/oauth2 v0.37.0
 	google.golang.org/api v0.300.0
 )
@@ -22,7 +23,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.22 // indirect
 	github.com/googleapis/gax-go/v2 v2.26.2 // indirect
-	github.com/zalando/go-keyring v0.2.8 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.69.0 // indirect
 	go.opentelemetry.io/otel v1.45.0 // indirect
