@@ -57,3 +57,22 @@ Ticket 1 is done when `syncd version` prints a version and `make vet test` passe
 - `requirements.md` (ticket 1 row), `CLAUDE.md` and the GH-1 plan doc were updated to match.
 - The GitHub issue for ticket 1 still mentions CI and needs the same update.
 - Ticket 37 (release builds) is unaffected. It still uses a GitHub release as the distribution point.
+
+## Development
+
+How to build and check the project locally. There is no CI (see ADR-002), so run the checks before committing or merging.
+
+| Command | What it does |
+| --- | --- |
+| `make build` | Builds `bin/syncd` with `Version` set from `git describe --tags --always --dirty` |
+| `make vet` | `go vet ./...` |
+| `make test` | `go test -race ./...` (race detector required) |
+
+```
+syncd <command>
+  version  -> prints Version (a git describe string, or "dev" with a plain go build)
+  (none)   -> usage on stderr, exit 2
+  unknown  -> error on stderr, exit 2
+```
+
+Layout: `cmd/syncd` (CLI, plain `os.Args` switch, no framework), `internal/sync`, `internal/store` and `internal/drive` (package stubs for now). `run(args, stdout, stderr) int` holds the logic so it can be tested without spawning a process.
