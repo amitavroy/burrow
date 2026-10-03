@@ -14,7 +14,13 @@ import (
 // because the userinfo endpoint would need an extra scope beyond drive.file.
 // extra options (e.g. option.WithEndpoint) are for tests.
 func Email(ctx context.Context, client Client, tok *oauth2.Token, extra ...option.ClientOption) (string, error) {
-	httpClient := client.OAuthConfig("").Client(ctx, tok)
+	return email(ctx, client.OAuthConfig(""), tok, extra...)
+}
+
+// email is Email with an explicit oauth2 config, so tests can point token
+// refreshes at a fake endpoint.
+func email(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token, extra ...option.ClientOption) (string, error) {
+	httpClient := cfg.Client(ctx, tok)
 	opts := append([]option.ClientOption{option.WithHTTPClient(httpClient)}, extra...)
 	svc, err := drv.NewService(ctx, opts...)
 	if err != nil {
