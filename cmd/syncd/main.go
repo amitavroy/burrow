@@ -100,6 +100,34 @@ func logout(stdout, stderr io.Writer) int {
 	return 0
 }
 
+// root finds or creates the app-owned MySync folder in Drive and prints its ID
+// and web URL. Running it again returns the same folder.
+func root(stdout, stderr io.Writer) int {
+	client, err := drive.LoadClient()
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	id, err := drive.EnsureRoot(ctx, client, drive.KeyringStore{}, drive.FileStore{})
+	switch {
+	case errors.Is(err, drive.ErrNotSignedIn):
+		fmt.Fprintln(stderr, "syncd: not signed in; run `syncd login`")
+		return 1
+	case errors.Is(err, drive.ErrSessionExpired):
+		fmt.Fprintln(stderr, "syncd: session expired; run `syncd login` to sign in again")
+		return 1
+	case err != nil:
+		fmt.Fprintf(stderr, "syncd: root failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s folder: %s\n", drive.RootFolderName, id)
+	fmt.Fprintf(stdout, "https://drive.google.com/drive/folders/%s\n", id)
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -115,6 +143,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return whoami(stdout, stderr)
 	case "logout":
 		return logout(stdout, stderr)
+	case "root":
+		return root(stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2

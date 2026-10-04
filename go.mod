@@ -3,6 +3,7 @@ module github.com/amitavroy/burrow
 go 1.27.1
 
 require (
+	github.com/adrg/xdg v0.5.3
 	github.com/joho/godotenv v1.5.1
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/oauth2 v0.37.0

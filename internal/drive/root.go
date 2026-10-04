@@ -2,10 +2,13 @@ package drive
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 
 	"golang.org/x/oauth2"
 	drv "google.golang.org/api/drive/v3"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -20,13 +23,16 @@ const (
 // EnsureRoot returns the Drive ID of the app-owned MySync folder, creating it
 // if this app has not made one yet. It signs in from the stored refresh token,
 // so it returns ErrNotSignedIn when nothing is stored and ErrSessionExpired
-// when Google rejects the token. extra options are for tests.
-func EnsureRoot(ctx context.Context, client Client, store TokenStore, extra ...option.ClientOption) (string, error) {
-	return ensureRoot(ctx, client.OAuthConfig(""), store, extra...)
+// when Google rejects the token. A cached ID from roots is reused only after
+// Drive confirms the folder still exists and is not in the trash; otherwise the
+// folder is looked up (or created) and the cache rewritten. extra options are
+// for tests.
+func EnsureRoot(ctx context.Context, client Client, tokens TokenStore, roots RootStore, extra ...option.ClientOption) (string, error) {
+	return ensureRoot(ctx, client.OAuthConfig(""), tokens, roots, extra...)
 }
 
-func ensureRoot(ctx context.Context, cfg *oauth2.Config, store TokenStore, extra ...option.ClientOption) (string, error) {
-	rt, err := store.Load()
+func ensureRoot(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, roots RootStore, extra ...option.ClientOption) (string, error) {
+	rt, err := tokens.Load()
 	if err != nil {
 		return "", err
 	}
@@ -34,11 +40,41 @@ func ensureRoot(ctx context.Context, cfg *oauth2.Config, store TokenStore, extra
 	if err != nil {
 		return "", err
 	}
+
+	// The cache is disposable, so an unreadable one is the same as an empty one.
+	if cached, err := roots.Load(); err == nil {
+		ok, err := rootUsable(ctx, svc, cached)
+		if err != nil {
+			return "", sessionError(err)
+		}
+		if ok {
+			return cached, nil
+		}
+	}
+
 	id, err := findOrCreateRoot(ctx, svc)
 	if err != nil {
 		return "", sessionError(err)
 	}
+	if err := roots.Save(id); err != nil {
+		return "", err
+	}
 	return id, nil
+}
+
+// rootUsable reports whether the cached folder still exists and is not
+// trashed. Gone (404, which drive.file also returns for files it cannot see)
+// and trashed both mean "look it up again"; any other failure is an error.
+func rootUsable(ctx context.Context, svc *drv.Service, id string) (bool, error) {
+	f, err := svc.Files.Get(id).Fields("id,trashed").Context(ctx).Do()
+	var gerr *googleapi.Error
+	if errors.As(err, &gerr) && gerr.Code == http.StatusNotFound {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check cached %s folder: %w", RootFolderName, err)
+	}
+	return !f.Trashed, nil
 }
 
 // findOrCreateRoot looks for MySync under My Drive root and creates it when

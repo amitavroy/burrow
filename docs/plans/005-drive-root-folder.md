@@ -28,9 +28,9 @@ Vertical slices; review after each.
 | --- | --- | --- | --- |
 | 1 | **Slice 1: `syncd root` creates/finds `MySync/` (no cache)** | `go get github.com/adrg/xdg` (used in slice 2; skip here if unused) and factor `newService` out of `about.go` | [x] |
 | 2 | | `internal/drive/root.go`: `EnsureRoot(ctx, client, store, extra...)` find/create logic, oldest-wins on duplicates | [x] |
-| 3 | | `cmd/syncd/main.go`: `root` subcommand with not-signed-in / expired hints; prints ID and URL. **Review point (demo: folder shows in Drive web UI).** | [ ] |
-| 4 | **Slice 2: local cache** | `internal/drive/rootstore.go`: `RootStore`, `FileStore` (xdg path, atomic write via temp + rename), `ErrNoRoot` | [ ] |
-| 5 | | `EnsureRoot` reads cache, validates via `files.get`, falls back and rewrites on 404/trashed | [ ] |
+| 3 | | `cmd/syncd/main.go`: `root` subcommand with not-signed-in / expired hints; prints ID and URL. **Review point (demo: folder shows in Drive web UI).** | [x] |
+| 4 | **Slice 2: local cache** | `internal/drive/rootstore.go`: `RootStore`, `FileStore` (xdg path, atomic write via temp + rename), `ErrNoRoot` | [x] |
+| 5 | | `EnsureRoot` reads cache, validates via `files.get`, falls back and rewrites on 404/trashed | [x] |
 | 6 | | Tests: fake Drive server (`httptest`, `option.WithEndpoint`): creates when absent, reuses when present, oldest of duplicates, cache hit skips list, stale/trashed cache recovers, store round trip and corrupt file treated as empty. **Review point.** | [ ] |
 | 7 | **Slice 3: docs** | README + `docs/wiki/index.md` (command list, cache location, decisions); mark ticket 5 done in `requirements.md` | [ ] |
 | 8 | | Demo: `syncd root` twice (same ID, one folder in Drive); trash it in the web UI, run again (new folder, cache updated); delete `state.json` (re-finds same folder). **Review point.** | [ ] |
