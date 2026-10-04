@@ -17,14 +17,23 @@ func Email(ctx context.Context, client Client, tok *oauth2.Token, extra ...optio
 	return email(ctx, client.OAuthConfig(""), tok, extra...)
 }
 
+// newService builds a Drive service that signs requests with tok and refreshes
+// it through cfg. extra options (e.g. option.WithEndpoint) are for tests.
+func newService(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token, extra ...option.ClientOption) (*drv.Service, error) {
+	opts := append([]option.ClientOption{option.WithHTTPClient(cfg.Client(ctx, tok))}, extra...)
+	svc, err := drv.NewService(ctx, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("create drive service: %w", err)
+	}
+	return svc, nil
+}
+
 // email is Email with an explicit oauth2 config, so tests can point token
 // refreshes at a fake endpoint.
 func email(ctx context.Context, cfg *oauth2.Config, tok *oauth2.Token, extra ...option.ClientOption) (string, error) {
-	httpClient := cfg.Client(ctx, tok)
-	opts := append([]option.ClientOption{option.WithHTTPClient(httpClient)}, extra...)
-	svc, err := drv.NewService(ctx, opts...)
+	svc, err := newService(ctx, cfg, tok, extra...)
 	if err != nil {
-		return "", fmt.Errorf("create drive service: %w", err)
+		return "", err
 	}
 	about, err := svc.About.Get().Fields("user(emailAddress)").Context(ctx).Do()
 	if err != nil {

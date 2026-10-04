@@ -39,11 +39,17 @@ func resume(ctx context.Context, cfg *oauth2.Config, store TokenStore, extra ...
 	}
 	addr, err := email(ctx, cfg, TokenFromRefresh(rt), extra...)
 	if err != nil {
-		var re *oauth2.RetrieveError
-		if errors.As(err, &re) && re.ErrorCode == "invalid_grant" {
-			return "", fmt.Errorf("%w: Google rejected the stored sign-in", ErrSessionExpired)
-		}
-		return "", err
+		return "", sessionError(err)
 	}
 	return addr, nil
+}
+
+// sessionError maps Google rejecting the refresh token (invalid_grant) to
+// ErrSessionExpired and passes any other error through unchanged.
+func sessionError(err error) error {
+	var re *oauth2.RetrieveError
+	if errors.As(err, &re) && re.ErrorCode == "invalid_grant" {
+		return fmt.Errorf("%w: Google rejected the stored sign-in", ErrSessionExpired)
+	}
+	return err
 }

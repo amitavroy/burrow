@@ -26,8 +26,8 @@ Vertical slices; review after each.
 
 | # | Slice | Step | Done |
 | --- | --- | --- | --- |
-| 1 | **Slice 1: `syncd root` creates/finds `MySync/` (no cache)** | `go get github.com/adrg/xdg` (used in slice 2; skip here if unused) and factor `newService` out of `about.go` | [ ] |
-| 2 | | `internal/drive/root.go`: `EnsureRoot(ctx, client, store, extra...)` find/create logic, oldest-wins on duplicates | [ ] |
+| 1 | **Slice 1: `syncd root` creates/finds `MySync/` (no cache)** | `go get github.com/adrg/xdg` (used in slice 2; skip here if unused) and factor `newService` out of `about.go` | [x] |
+| 2 | | `internal/drive/root.go`: `EnsureRoot(ctx, client, store, extra...)` find/create logic, oldest-wins on duplicates | [x] |
 | 3 | | `cmd/syncd/main.go`: `root` subcommand with not-signed-in / expired hints; prints ID and URL. **Review point (demo: folder shows in Drive web UI).** | [ ] |
 | 4 | **Slice 2: local cache** | `internal/drive/rootstore.go`: `RootStore`, `FileStore` (xdg path, atomic write via temp + rename), `ErrNoRoot` | [ ] |
 | 5 | | `EnsureRoot` reads cache, validates via `files.get`, falls back and rewrites on 404/trashed | [ ] |
