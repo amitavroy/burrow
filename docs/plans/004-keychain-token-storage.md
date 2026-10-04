@@ -29,8 +29,8 @@ Vertical slices; review after each.
 | 2 | | `internal/drive/tokenstore.go`: `TokenStore`, `KeyringStore`, `ErrNotSignedIn` | [x] |
 | 3 | | `cmd/syncd/main.go`: `login` saves the refresh token after exchange; test with mock keyring that it is stored. **Review point.** | [x] |
 | 4 | **Slice 2: `syncd whoami`** | `internal/drive/resume.go`: `TokenFromRefresh`, `Resume(ctx, client, store)` returning email via existing `drive.Email` | [x] |
-| 5 | | `whoami` subcommand, error hints for not-signed-in / revoked / keychain unavailable | [ ] |
-| 6 | | Tests: refresh against fake token endpoint (asserts `grant_type=refresh_token`), not signed in, `invalid_grant`. **Review point.** | [ ] |
+| 5 | | `whoami` subcommand, error hints for not-signed-in / revoked / keychain unavailable | [x] |
+| 6 | | Tests: refresh against fake token endpoint (asserts `grant_type=refresh_token`), not signed in, `invalid_grant`. **Review point.** | [x] |
 | 7 | **Slice 3: `syncd logout`** | `logout` subcommand deletes the entry, idempotent; test login-then-logout-then-whoami fails | [ ] |
 | 8 | | README + `docs/wiki/index.md` (Sign-in section: token now stored, new commands; add to command list); mark ticket 4 done in `requirements.md` | [ ] |
 | 9 | | Demo: `login`, restart shell, `whoami` prints email; `logout`, `whoami` says not signed in. **Review point.** | [ ] |

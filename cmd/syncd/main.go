@@ -61,6 +61,34 @@ func login(stdout, stderr io.Writer) int {
 	return 0
 }
 
+// whoami signs in from the stored refresh token, without a browser, and
+// prints the account email.
+func whoami(stdout, stderr io.Writer) int {
+	client, err := drive.LoadClient()
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	email, err := drive.Resume(ctx, client, drive.KeyringStore{})
+	switch {
+	case errors.Is(err, drive.ErrNotSignedIn):
+		fmt.Fprintln(stderr, "syncd: not signed in; run `syncd login`")
+		return 1
+	case errors.Is(err, drive.ErrSessionExpired):
+		fmt.Fprintln(stderr, "syncd: session expired; run `syncd login` to sign in again")
+		return 1
+	case err != nil:
+		// Keychain errors arrive already labelled ("read keychain: ...").
+		fmt.Fprintf(stderr, "syncd: whoami failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Signed in as %s\n", email)
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -72,6 +100,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return 0
 	case "login":
 		return login(stdout, stderr)
+	case "whoami":
+		return whoami(stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2
