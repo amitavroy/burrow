@@ -89,6 +89,17 @@ func whoami(stdout, stderr io.Writer) int {
 	return 0
 }
 
+// logout clears the stored refresh token. It is local only: the token is not
+// revoked at Google. Running it while signed out is fine.
+func logout(stdout, stderr io.Writer) int {
+	if err := (drive.KeyringStore{}).Delete(); err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "Signed out")
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -102,6 +113,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return login(stdout, stderr)
 	case "whoami":
 		return whoami(stdout, stderr)
+	case "logout":
+		return logout(stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2

@@ -42,7 +42,14 @@ make build
 bin/syncd login
 ```
 
-Your browser opens to Google's consent screen (scope `drive.file` only). When you approve, the terminal prints `Signed in as <email>`. The token is not saved yet; keychain storage arrives with `syncd whoami` and `logout`.
+Your browser opens to Google's consent screen (scope `drive.file` only). When you approve, the terminal prints `Signed in as <email>`, and the refresh token is saved in your OS keychain (never in a file or the database).
+
+```
+bin/syncd whoami   # signs in silently from the saved token and prints the email
+bin/syncd logout   # clears the saved token (does not revoke it at Google)
+```
+
+On Linux the keychain is the Secret Service (GNOME Keyring or KWallet), so a desktop session is needed. Without one, `login` and `whoami` fail with a keychain error rather than storing the token elsewhere.
 
 ## Development
 

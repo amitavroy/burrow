@@ -101,3 +101,42 @@ func TestPersistToken(t *testing.T) {
 		})
 	}
 }
+
+func TestLogout(t *testing.T) {
+	keyring.MockInit()
+	t.Setenv("BURROW_GOOGLE_CLIENT_ID", "id")
+	t.Setenv("BURROW_GOOGLE_CLIENT_SECRET", "secret")
+	store := drive.KeyringStore{}
+
+	// Stand in for a completed login.
+	if err := store.Save("refresh"); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"logout"}, &stdout, &stderr); code != 0 {
+		t.Fatalf("logout exit code = %d, stderr = %q", code, stderr.String())
+	}
+	if stdout.String() != "Signed out\n" {
+		t.Errorf("stdout = %q", stdout.String())
+	}
+	if _, err := store.Load(); !errors.Is(err, drive.ErrNotSignedIn) {
+		t.Errorf("token still stored after logout: err = %v", err)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"whoami"}, &stdout, &stderr); code != 1 {
+		t.Errorf("whoami after logout exit code = %d, want 1", code)
+	}
+	if !strings.Contains(stderr.String(), "run `syncd login`") {
+		t.Errorf("stderr = %q, want the sign-in hint", stderr.String())
+	}
+
+	// Idempotent: logging out again is not an error.
+	stdout.Reset()
+	stderr.Reset()
+	if code := run([]string{"logout"}, &stdout, &stderr); code != 0 {
+		t.Errorf("second logout exit code = %d, stderr = %q", code, stderr.String())
+	}
+}

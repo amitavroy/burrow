@@ -78,14 +78,27 @@ syncd login
   -> open browser at the auth URL (S256 challenge, random state, access_type=offline, prompt=consent)
   -> Google redirects to /callback?code&state
   -> check state, exchange code with the PKCE verifier
+  -> save the refresh token in the OS keychain
   -> Drive about.get (fields=user(emailAddress)) -> print "Signed in as <email>"
 ```
 
 - The email comes from Drive `about.get`, not the userinfo endpoint, because userinfo needs a scope beyond `drive.file`.
-- `prompt=consent` makes Google return a refresh token on every sign-in, which ticket 4 will store.
+- `prompt=consent` makes Google return a refresh token on every sign-in, which is what gets stored.
 - Times out after 2 minutes or on Ctrl+C. The auth URL is always printed too, so it works on a box with no browser.
-- The token lives in memory only for now; keychain storage is ticket 4. Tokens and the auth code are never logged.
+- Tokens and the auth code are never logged.
 - Code: `drive.Login` (`internal/drive/auth.go`), `drive.Email` (`internal/drive/about.go`).
+
+### Token storage
+
+Rule: the refresh token lives only in the OS keychain (`go-keyring`), never in the DB, config or logs.
+
+- Only the refresh token string is stored (service `burrow`, user `google-refresh-token`). Access tokens are re-derived by refreshing.
+- `drive.TokenStore` is the interface; `drive.KeyringStore` is the keychain implementation (`internal/drive/tokenstore.go`). A missing entry is `ErrNotSignedIn`, and deleting a missing entry is not an error.
+- `syncd login` saves the token right after the code exchange, before the email lookup, so a failed `about.get` does not waste the sign-in.
+- `syncd whoami` calls `drive.Resume` (`internal/drive/resume.go`): load the token, refresh it, ask Drive for the email. The rebuilt token has an expiry in the past (`TokenFromRefresh`), because oauth2 treats a zero expiry as "never expires" and would never refresh.
+- Google answering `invalid_grant` (revoked or expired) becomes `ErrSessionExpired`, and `whoami` tells the user to run `syncd login`.
+- `syncd logout` only clears the local entry. It does not revoke the token at Google.
+- No file fallback when the keychain is unavailable (for example Linux without a Secret Service): the command fails with a keychain error, because secrets must stay out of files.
 
 ## Development
 
@@ -100,7 +113,9 @@ How to build and check the project locally. There is no CI (see ADR-002), so run
 ```
 syncd <command>
   version  -> prints Version (a git describe string, or "dev" with a plain go build)
-  login    -> browser sign-in (loopback + PKCE), prints "Signed in as <email>"; token not saved yet (ticket 4)
+  login    -> browser sign-in (loopback + PKCE), saves the refresh token in the keychain, prints "Signed in as <email>"
+  whoami   -> silent sign-in from the saved token, prints "Signed in as <email>"; exit 1 with a hint if not signed in or expired
+  logout   -> clears the saved token, prints "Signed out" (safe to repeat)
   (none)   -> usage on stderr, exit 2
   unknown  -> error on stderr, exit 2
 ```
