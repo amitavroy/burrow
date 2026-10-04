@@ -100,6 +100,18 @@ Rule: the refresh token lives only in the OS keychain (`go-keyring`), never in t
 - `syncd logout` only clears the local entry. It does not revoke the token at Google.
 - No file fallback when the keychain is unavailable (for example Linux without a Secret Service): the command fails with a keychain error, because secrets must stay out of files.
 
+## Drive root folder
+
+`syncd root` finds or creates the app-owned `MySync/` folder in My Drive and prints `MySync folder: <id>` plus its web URL. Later tickets upload into it.
+
+- With `drive.file` the app only sees folders it created, so a hand-made `MySync/` is invisible. The app creates and owns it.
+- Lookup: `files.list` with `name = 'MySync'`, folder MIME type, `'root' in parents`, `trashed = false`, ordered by `createdTime`. If several match (Drive allows duplicate names) the oldest wins; nothing is deleted or merged. If none, `files.create` under `root`.
+- Cache: `{"root_folder_id": "..."}` in `state.json` in the `adrg/xdg` data dir (`burrow/state.json`; Local, not Roaming, on Windows). It is never inside the sync root. Disposable: deleting it costs one lookup. Ticket 7 may fold it into SQLite.
+- The cached ID is checked with `files.get(fields=id,trashed)` before use. On 404 or `trashed: true` it falls back to find/create and rewrites the cache, so uploads never go into the trash.
+- Idempotent: a second run prints the same ID and creates nothing.
+- Code: `drive.EnsureRoot` (`internal/drive/root.go`); `drive.RootStore`, `drive.FileStore`, `ErrNoRoot` (`internal/drive/rootstore.go`). `FileStore` writes through a temp file and rename; a corrupt cache is treated as empty. The Drive service is built by `newService` in `about.go`, shared with `Email`.
+- Same exit-1 hints as `whoami` when not signed in or the session expired.
+
 ## Development
 
 How to build and check the project locally. There is no CI (see ADR-002), so run the checks before committing or merging.
@@ -116,6 +128,7 @@ syncd <command>
   login    -> browser sign-in (loopback + PKCE), saves the refresh token in the keychain, prints "Signed in as <email>"
   whoami   -> silent sign-in from the saved token, prints "Signed in as <email>"; exit 1 with a hint if not signed in or expired
   logout   -> clears the saved token, prints "Signed out" (safe to repeat)
+  root     -> finds or creates MySync/ in Drive, prints its ID and URL; caches the ID in state.json
   (none)   -> usage on stderr, exit 2
   unknown  -> error on stderr, exit 2
 ```

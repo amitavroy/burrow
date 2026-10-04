@@ -51,6 +51,16 @@ bin/syncd logout   # clears the saved token (does not revoke it at Google)
 
 On Linux the keychain is the Secret Service (GNOME Keyring or KWallet), so a desktop session is needed. Without one, `login` and `whoami` fail with a keychain error rather than storing the token elsewhere.
 
+## Drive root folder
+
+```
+bin/syncd root   # finds or creates MySync/ in My Drive, prints its ID and URL
+```
+
+Burrow creates and owns `MySync/` itself. With the `drive.file` scope it cannot see a folder you made by hand, so a hand-made `MySync/` is ignored. Running `root` again prints the same ID and creates nothing.
+
+The folder ID is cached in `state.json` in the app data dir (`~/.local/share/burrow/` on Linux). The cache is disposable: delete it and the next run finds the existing folder again. If you trash `MySync/` in the web UI, the next run notices and creates a new one.
+
 ## Development
 
 ```
