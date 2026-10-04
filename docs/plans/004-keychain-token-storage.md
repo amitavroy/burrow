@@ -33,7 +33,7 @@ Vertical slices; review after each.
 | 6 | | Tests: refresh against fake token endpoint (asserts `grant_type=refresh_token`), not signed in, `invalid_grant`. **Review point.** | [x] |
 | 7 | **Slice 3: `syncd logout`** | `logout` subcommand deletes the entry, idempotent; test login-then-logout-then-whoami fails | [x] |
 | 8 | | README + `docs/wiki/index.md` (Sign-in section: token now stored, new commands; add to command list); mark ticket 4 done in `requirements.md` | [x] |
-| 9 | | Demo: `login`, restart shell, `whoami` prints email; `logout`, `whoami` says not signed in. **Review point.** | [ ] |
+| 9 | | Demo: `login`, restart shell, `whoami` prints email; `logout`, `whoami` says not signed in. **Review point.** | [x] |
 
 ## Files to create/modify
 
