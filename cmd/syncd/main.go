@@ -252,14 +252,44 @@ func stat(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// db groups the state database commands.
+// dbPath locates the state database. Tests replace it so they never touch the
+// real data dir.
+var dbPath = store.DefaultPath
+
+// db groups the state database commands. `path` only prints the location;
+// `status` opens (creating and migrating if needed) and reports on the database.
 func db(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 1 && args[0] == "path" {
-		fmt.Fprintln(stdout, store.DefaultPath())
-		return 0
+	if len(args) == 1 {
+		switch args[0] {
+		case "path":
+			fmt.Fprintln(stdout, dbPath())
+			return 0
+		case "status":
+			return dbStatus(stdout, stderr)
+		}
 	}
-	fmt.Fprintln(stderr, "usage: syncd db path")
+	fmt.Fprintln(stderr, "usage: syncd db path | syncd db status")
 	return 2
+}
+
+func dbStatus(stdout, stderr io.Writer) int {
+	path := dbPath()
+	conn, err := store.Open(path)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: db status failed: %v\n", err)
+		return 1
+	}
+	defer conn.Close()
+
+	info, err := store.Status(conn)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: db status failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "Path:    %s\n", path)
+	fmt.Fprintf(stdout, "Version: %d\n", info.Version)
+	fmt.Fprintf(stdout, "Tables:  %s\n", strings.Join(info.Tables, ", "))
+	return 0
 }
 
 func run(args []string, stdout, stderr io.Writer) int {

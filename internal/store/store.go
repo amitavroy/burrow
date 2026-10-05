@@ -77,3 +77,37 @@ func fsSub() (fs.FS, error) {
 	}
 	return sub, nil
 }
+
+// Info describes the migrated database for `syncd db status`.
+type Info struct {
+	Version int64
+	Tables  []string
+}
+
+// Status reports the applied migration version and the user table names,
+// sorted. SQLite's own internal tables are left out.
+func Status(db *sql.DB) (Info, error) {
+	var info Info
+	var version sql.NullInt64
+	if err := db.QueryRow("SELECT MAX(version_id) FROM goose_db_version").Scan(&version); err != nil {
+		return Info{}, fmt.Errorf("read migration version: %w", err)
+	}
+	info.Version = version.Int64
+
+	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+	if err != nil {
+		return Info{}, fmt.Errorf("list tables: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return Info{}, fmt.Errorf("list tables: %w", err)
+		}
+		info.Tables = append(info.Tables, name)
+	}
+	if err := rows.Err(); err != nil {
+		return Info{}, fmt.Errorf("list tables: %w", err)
+	}
+	return info, nil
+}

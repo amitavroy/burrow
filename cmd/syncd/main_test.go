@@ -257,3 +257,53 @@ func TestStat(t *testing.T) {
 		})
 	}
 }
+
+func TestDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data", "burrow.db")
+	orig := dbPath
+	dbPath = func() string { return path }
+	t.Cleanup(func() { dbPath = orig })
+
+	t.Run("path prints the location and creates nothing", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		if code := run([]string{"db", "path"}, &stdout, &stderr); code != 0 {
+			t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+		}
+		if got := strings.TrimSpace(stdout.String()); got != path {
+			t.Errorf("stdout = %q, want %q", got, path)
+		}
+		if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+			t.Errorf("db path created %s (err = %v)", filepath.Dir(path), err)
+		}
+	})
+
+	t.Run("status migrates and lists tables, twice", func(t *testing.T) {
+		for i := 0; i < 2; i++ {
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"db", "status"}, &stdout, &stderr); code != 0 {
+				t.Fatalf("run #%d: code = %d, stderr = %q", i+1, code, stderr.String())
+			}
+			for _, want := range []string{"Path:    " + path, "Version: 1", "files", "goose_db_version"} {
+				if !strings.Contains(stdout.String(), want) {
+					t.Errorf("run #%d: stdout %q missing %q", i+1, stdout.String(), want)
+				}
+			}
+		}
+	})
+
+	for name, args := range map[string][]string{
+		"missing subcommand": {"db"},
+		"unknown subcommand": {"db", "nope"},
+		"extra argument":     {"db", "path", "x"},
+	} {
+		t.Run(name+" prints usage", func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(args, &stdout, &stderr); code != 2 {
+				t.Errorf("code = %d, want 2", code)
+			}
+			if !strings.Contains(stderr.String(), "usage: syncd db") {
+				t.Errorf("stderr = %q, want usage", stderr.String())
+			}
+		})
+	}
+}
