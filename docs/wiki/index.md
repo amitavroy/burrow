@@ -114,7 +114,7 @@ Rule: the refresh token lives only in the OS keychain (`go-keyring`), never in t
 
 - With `drive.file` the app only sees folders it created, so a hand-made `MySync/` is invisible. The app creates and owns it.
 - Lookup: `files.list` with `name = 'MySync'`, folder MIME type, `'root' in parents`, `trashed = false`, ordered by `createdTime`. If several match (Drive allows duplicate names) the oldest wins; nothing is deleted or merged. If none, `files.create` under `root`.
-- Cache: `{"root_folder_id": "..."}` in `state.json` in the `adrg/xdg` data dir (`burrow/state.json`; Local, not Roaming, on Windows). It is never inside the sync root. Disposable: deleting it costs one lookup. Ticket 7 may fold it into SQLite.
+- Cache: `{"root_folder_id": "..."}` in `state.json` in the `adrg/xdg` data dir (`burrow/state.json`; Local, not Roaming, on Windows). It is never inside the sync root. Disposable: deleting it costs one lookup. It stays a separate file for now; the State database section covers the SQLite cache.
 - The cached ID is checked with `files.get(fields=id,trashed)` before use. On 404 or `trashed: true` it falls back to find/create and rewrites the cache, so uploads never go into the trash.
 - Idempotent: a second run prints the same ID and creates nothing.
 - Code: `drive.EnsureRoot` (`internal/drive/root.go`); `drive.RootStore`, `drive.FileStore`, `ErrNoRoot` (`internal/drive/rootstore.go`). `FileStore` writes through a temp file and rename; a corrupt cache is treated as empty. The Drive service is built by `newService` in `about.go`, shared with `Email`.
