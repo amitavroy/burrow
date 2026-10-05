@@ -26,7 +26,7 @@ Vertical slices; review after each.
 | # | Slice | Step | Done |
 | --- | --- | --- | --- |
 | 1 | **Slice 1: `syncd db path`** | `internal/store/path.go`: `DefaultPath()`; `cmd/syncd/main.go`: `db` command with the `path` subcommand, usage and exit codes. **Review point (demo: prints the location).** | [x] |
-| 2 | **Slice 2: DB opens and migrates** | `go get modernc.org/sqlite github.com/pressly/goose/v3`; `internal/store/store.go`: `Open(path)` with pragmas, `MaxOpenConns(1)`, 0700 dir; embedded `migrations/00001_init.sql`; goose provider `Up` | [ ] |
+| 2 | **Slice 2: DB opens and migrates** | `go get modernc.org/sqlite github.com/pressly/goose/v3`; `internal/store/store.go`: `Open(path)` with pragmas, `MaxOpenConns(1)`, 0700 dir; embedded `migrations/00001_init.sql`; goose provider `Up` | [x] |
 | 3 | | Tests: Open creates the file, WAL is on, `foreign_keys` is on, migrations are idempotent (open twice), `files` has the expected columns, `rel_path` is unique. Run under `-race`. **Review point.** | [ ] |
 | 4 | **Slice 3: `syncd db status`** | `store.Status(db)` returns the version and table names; the `db status` command prints them; tests through `run(args, ...)` with an overridden path. **Review point (demo: tables listed).** | [ ] |
 | 5 | **Slice 4: docs** | README and `docs/wiki/index.md` (new "State database" section, command usage block, ADR note on goose); mark ticket 7 `=> Done` in `requirements.md`. **Review point.** | [ ] |
