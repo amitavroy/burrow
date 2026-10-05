@@ -112,6 +112,34 @@ Rule: the refresh token lives only in the OS keychain (`go-keyring`), never in t
 - Code: `drive.EnsureRoot` (`internal/drive/root.go`); `drive.RootStore`, `drive.FileStore`, `ErrNoRoot` (`internal/drive/rootstore.go`). `FileStore` writes through a temp file and rename; a corrupt cache is treated as empty. The Drive service is built by `newService` in `about.go`, shared with `Email`.
 - Same exit-1 hints as `whoami` when not signed in or the session expired.
 
+## Uploading a file
+
+`syncd put` uploads one local file into `MySync/`. Rule: files are tracked by Drive file ID, and every upload carries `appProperties` `{watch_id, rel_path}`, because Drive allows duplicate names.
+
+```
+syncd put [--watch ID] [--root DIR] <file>
+  -> rel_path = file's basename, or its slash-form path relative to --root
+     (outside --root is rejected, exit 2)
+  -> EnsureRoot -> MySync folder ID
+  -> files.list: appProperties watch_id + rel_path, trashed = false, parent = MySync
+       match    -> files.update (content + tags), same ID
+       no match -> files.create (parent = MySync, tags)
+  -> print file ID and web link
+```
+
+- `watch_id` defaults to `default`. `rel_path` never has `..`, a leading `/` or machine-specific parts.
+- If several files carry the same tags, the oldest wins.
+- Tag values are escaped (`\` and `'`) in the query.
+- Files that fit in one 8 MB chunk go as one multipart request; larger ones use a resumable upload in 8 MB chunks. The file is streamed from disk, never read whole.
+- Everything is placed directly in `MySync/`. Per-watch subfolders come with ticket 10, and the MD5 skip and retries with tickets 12 and 16.
+- Requested fields: `id,name,md5Checksum,size,headRevisionId,appProperties,webViewLink`.
+- Same exit-1 hints as `whoami` when not signed in or the session expired. Usage errors exit 2.
+- Code: `drive.Upload`, `drive.Stat`, `drive.FindByTags`, `drive.FileInfo`, `ErrFileNotFound` (`internal/drive/upload.go`). Service setup is shared through `serviceFromStore` (`root.go`).
+
+### Stat
+
+`syncd stat <file-id>` uses `files.get`. `syncd stat --watch ID <rel_path>` uses the same tag query as `put` (so it creates `MySync/` if missing). Both print ID, name, size, MD5, revision, `watch_id` and `rel_path`. A file this app cannot see is reported as not found, because `drive.file` returns 404 for it.
+
 ## Development
 
 How to build and check the project locally. There is no CI (see ADR-002), so run the checks before committing or merging.
@@ -129,6 +157,8 @@ syncd <command>
   whoami   -> silent sign-in from the saved token, prints "Signed in as <email>"; exit 1 with a hint if not signed in or expired
   logout   -> clears the saved token, prints "Signed out" (safe to repeat)
   root     -> finds or creates MySync/ in Drive, prints its ID and URL; caches the ID in state.json
+  put      -> [--watch ID] [--root DIR] <file>: uploads into MySync/ with watch_id and rel_path tags; same tags update the same file
+  stat     -> <file-id> or --watch ID <rel_path>: prints ID, name, size, MD5, revision and tags
   (none)   -> usage on stderr, exit 2
   unknown  -> error on stderr, exit 2
 ```
