@@ -2,10 +2,15 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func openTempRepo(t *testing.T) (*Repo, string) {
@@ -203,5 +208,156 @@ func TestRepoDriveIDUnique(t *testing.T) {
 	}
 	if err := r.Upsert(ctx, File{RelPath: "b", DriveFileID: "d1"}); err == nil {
 		t.Error("duplicate drive_file_id accepted, want error")
+	}
+}
+
+func TestRepoDelete(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	for _, p := range []string{"a", "b"} {
+		if err := r.Upsert(ctx, File{RelPath: p}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.Delete(ctx, "a"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := r.Get(ctx, "a"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Get after Delete = %v, want ErrNotFound", err)
+	}
+	files, err := r.List(ctx)
+	if err != nil || len(files) != 1 || files[0].RelPath != "b" {
+		t.Errorf("List after Delete = %v, %v; want only b", files, err)
+	}
+	if err := r.Delete(ctx, "a"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("second Delete = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRepoConcurrentUpsertGet(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	const n = 50
+	var wg sync.WaitGroup
+	errs := make(chan error, n*2)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			p := fmt.Sprintf("dir/file-%02d.txt", i)
+			if err := r.Upsert(ctx, File{RelPath: p, Size: int64(i)}); err != nil {
+				errs <- err
+				return
+			}
+			got, err := r.Get(ctx, p)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if got.Size != int64(i) {
+				errs <- fmt.Errorf("%s: size = %d, want %d", p, got.Size, i)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+	files, err := r.List(ctx)
+	if err != nil || len(files) != n {
+		t.Errorf("List = %d rows, %v; want %d", len(files), err, n)
+	}
+}
+
+// block occupies the owner goroutine until release is closed and returns once
+// the owner is running it.
+func block(t *testing.T, r *Repo) (release func()) {
+	t.Helper()
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	go r.do(context.Background(), func(*sql.DB) (any, error) {
+		close(started)
+		<-gate
+		return nil, nil
+	})
+	<-started
+	return func() { close(gate) }
+}
+
+func TestRepoCancelledContextWhileSending(t *testing.T) {
+	r, _ := openTempRepo(t)
+	release := block(t, r)
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() { done <- r.Upsert(ctx, fullFile()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("Upsert = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Upsert with cancelled context hung")
+	}
+}
+
+func TestRepoCancelledContextWhileWaiting(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	gate := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.do(ctx, func(*sql.DB) (any, error) {
+			close(started)
+			<-gate
+			return nil, nil
+		})
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("do = %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("call hung after cancel")
+	}
+	close(gate) // owner finishes its request and keeps serving
+	if err := r.Upsert(context.Background(), fullFile()); err != nil {
+		t.Errorf("Upsert after cancelled call: %v", err)
+	}
+}
+
+func TestRepoPanicIsReturnedAndOwnerSurvives(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	_, err := r.do(ctx, func(*sql.DB) (any, error) { panic("boom") })
+	if err == nil {
+		t.Fatal("panic in request returned nil error")
+	}
+	if strings.Contains(err.Error(), "boom") {
+		t.Errorf("error leaks panic value: %v", err)
+	}
+	if err := r.Upsert(ctx, fullFile()); err != nil {
+		t.Errorf("Upsert after panic: %v", err)
+	}
+	if _, err := r.Get(ctx, fullFile().RelPath); err != nil {
+		t.Errorf("Get after panic: %v", err)
+	}
+}
+
+func TestRepoCloseTwice(t *testing.T) {
+	r, _ := openTempRepo(t)
+	if err := r.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
 	}
 }

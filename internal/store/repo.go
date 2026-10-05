@@ -155,6 +155,28 @@ func (r *Repo) GetByDriveID(ctx context.Context, id string) (File, error) {
 	return v.(File), nil
 }
 
+// Delete removes the file with the given RelPath, or returns ErrNotFound.
+func (r *Repo) Delete(ctx context.Context, relPath string) error {
+	_, err := r.do(ctx, func(db *sql.DB) (any, error) {
+		res, err := db.Exec(`DELETE FROM files WHERE rel_path = ?`, relPath)
+		if err != nil {
+			return nil, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			return nil, ErrNotFound
+		}
+		return nil, nil
+	})
+	if err != nil {
+		return fmt.Errorf("delete %q: %w", relPath, err)
+	}
+	return nil
+}
+
 // List returns every file ordered by RelPath.
 func (r *Repo) List(ctx context.Context) ([]File, error) {
 	v, err := r.do(ctx, func(db *sql.DB) (any, error) {
