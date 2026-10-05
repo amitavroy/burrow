@@ -285,7 +285,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 4 | M1 Hello Drive | Keychain token storage | Save the refresh token with `go-keyring`; `syncd logout` clears it | `syncd whoami` works after a restart without signing in again | 3 | => Done
 | 5 | M1 Hello Drive | Drive root folder | Create or find the app-owned `MySync/` folder; cache its ID locally | `MySync/` appears in the Drive web UI | 4 | => Done
 | 6 | M1 Hello Drive | Single-file upload | `syncd put <file>` with `watch_id` and `rel_path` in `appProperties` | **Checkpoint:** file shows in Drive; `syncd stat` prints its ID and tags | 5 | => Done
-| 7 | M2 One-shot sync | State DB setup | `modernc.org/sqlite`, WAL mode, `goose` migrations, path via `adrg/xdg` | `syncd db path` prints the location; tables exist | 1 |
+| 7 | M2 One-shot sync | State DB setup | `modernc.org/sqlite`, WAL mode, `goose` migrations, path via `adrg/xdg` | `syncd db path` prints the location; tables exist | 1 | => Done
 | 8 | M2 One-shot sync | Files repository | `files` table and CRUD layer owned by one goroutine; unit tests | Tests pass under `-race` | 7 |
 | 9 | M2 One-shot sync | Scan with ignore rules | `filepath.WalkDir` over the sync root, gitignore-style matcher, default ignores | `syncd scan --dry-run` lists files that would upload | 1 |
 | 10 | M2 One-shot sync | Folder hierarchy in Drive | Lazy folder creation with a path to folder-ID cache | A nested local tree is mirrored in Drive | 6 |

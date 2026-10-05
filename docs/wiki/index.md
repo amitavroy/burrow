@@ -68,6 +68,14 @@ Date: 2026-10-03. Ticket: GH-2.
 - The `drive.file` scope is a Go const, not configuration.
 - Consequence: a release binary has no `.env` beside it. Ticket 37 must inject the values with `-ldflags -X` at build time, with `.env` as the dev-time override.
 
+### ADR-004: goose for migrations, embedded in the binary
+
+Date: 2026-10-05. Ticket: GH-6.
+
+- Decision: schema changes are plain `.sql` files in `internal/store/migrations/`, embedded with `//go:embed` and applied by `goose.NewProvider` when the database is opened.
+- Why: goose supports embedded SQL files and a provider with no global state, so there are no migration files to ship beside the binary. This chose it over golang-migrate.
+- Consequence: each later ticket adds its own numbered migration (`file_revisions` in 13, jobs in 17, `sync_errors` in 18) instead of guessing future schemas now.
+
 ## Sign-in
 
 `syncd login` signs the user in with Google. Rule: user OAuth with loopback redirect and PKCE, scope `drive.file` only.
@@ -139,6 +147,19 @@ syncd put [--watch ID] [--root DIR] <file>
 ### Stat
 
 `syncd stat <file-id>` uses `files.get`. `syncd stat --watch ID <rel_path>` uses the same tag query as `put` (so it creates `MySync/` if missing). Both print ID, name, size, MD5, revision, `watch_id` and `rel_path`. A file this app cannot see is reported as not found, because `drive.file` returns 404 for it.
+
+## State database
+
+`syncd db path` prints the database location and creates nothing. `syncd db status` opens the database (creating and migrating it if needed) and prints `Path:`, `Version:` and `Tables:`. Both exit 2 with usage on a missing or unknown subcommand.
+
+- Location: `burrow/burrow.db` in the `adrg/xdg` data dir (Local, not Roaming, on Windows), next to `state.json`. `store.DefaultPath()` only computes the path, because `xdg.DataFile` would create directories. It is never inside the sync root.
+- Disposable: Drive is the source of truth. Deleting the file loses only cache and the next open recreates it. It is never copied or synced.
+- Driver: `modernc.org/sqlite`, pure Go, no cgo.
+- `store.Open(path)` creates the directory (0700), applies the pragmas through the DSN (`journal_mode(WAL)`, `busy_timeout(5000)`, `foreign_keys(on)`, `synchronous(NORMAL)`), caps the pool at one connection and runs pending migrations. The caller must keep the `*sql.DB` in one owner goroutine; the wrapper arrives with the repository in ticket 8. SQL arguments are never logged.
+- First migration `00001_init.sql` creates `files`: `rel_path` (unique), `drive_file_id`, `size`, `mtime`, `inode`, `local_md5`, `synced_md5`, `base_md5`, `base_revision_id`. See ADR-004 for how later tables arrive.
+- `store.Status(db)` returns the migration version and the user table names (`files` and goose's `goose_db_version`).
+- `state.json` stays for now; folding the root folder ID into the database is a later cleanup.
+- Code: `internal/store/store.go`, `path.go`; the `db` command in `cmd/syncd/main.go`. Tests replace the `dbPath` var so they never touch the real data dir.
 
 ## Development
 

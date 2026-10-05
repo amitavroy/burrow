@@ -71,6 +71,15 @@ bin/syncd stat --watch ID <rel_path>             # same, found by tags instead o
 
 Every upload is tagged in Drive with `watch_id` (default `default`) and `rel_path`. Without `--root`, `rel_path` is the file's name; with it, the path relative to `--root` (a file outside the root is rejected). Putting a file with the same tags again updates the existing Drive file instead of making a second one. `stat --watch` creates `MySync/` if it does not exist yet.
 
+## State database
+
+```
+bin/syncd db path     # prints where the database lives; creates nothing
+bin/syncd db status   # opens and migrates it, then prints path, migration version and tables
+```
+
+The database is a local SQLite cache at `burrow.db` in the app data dir (`~/.local/share/burrow/` on Linux), next to `state.json`. Drive is the source of truth, so the file is disposable: delete it and the next `db status` recreates it. It is never synced and never inside the sync root.
+
 ## Development
 
 ```
