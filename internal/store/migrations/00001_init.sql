@@ -12,5 +12,8 @@ CREATE TABLE files (
     base_revision_id TEXT
 );
 
+CREATE UNIQUE INDEX files_drive_file_id ON files (drive_file_id) WHERE drive_file_id IS NOT NULL;
+
 -- +goose Down
+DROP INDEX files_drive_file_id;
 DROP TABLE files;

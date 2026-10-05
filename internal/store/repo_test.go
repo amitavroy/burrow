@@ -144,3 +144,64 @@ func countRows(t *testing.T, path string) int {
 	}
 	return n
 }
+
+func TestRepoGetByDriveID(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	want := fullFile()
+	if err := r.Upsert(ctx, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.GetByDriveID(ctx, want.DriveFileID)
+	if err != nil {
+		t.Fatalf("GetByDriveID: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("GetByDriveID = %+v, want %+v", got, want)
+	}
+	if _, err := r.GetByDriveID(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("GetByDriveID missing = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRepoListOrderedByRelPath(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	got, err := r.List(ctx)
+	if err != nil || len(got) != 0 {
+		t.Fatalf("List empty = %v, %v; want no rows", got, err)
+	}
+	for _, p := range []string{"b.txt", "a/z.txt", "a.txt"} {
+		if err := r.Upsert(ctx, File{RelPath: p}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err = r.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, f := range got {
+		paths = append(paths, f.RelPath)
+	}
+	if want := []string{"a.txt", "a/z.txt", "b.txt"}; !reflect.DeepEqual(paths, want) {
+		t.Errorf("List order = %v, want %v", paths, want)
+	}
+}
+
+func TestRepoDriveIDUnique(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	// Any number of rows without a Drive ID is fine.
+	for _, p := range []string{"a", "b", "c"} {
+		if err := r.Upsert(ctx, File{RelPath: p}); err != nil {
+			t.Fatalf("Upsert without drive id: %v", err)
+		}
+	}
+	if err := r.Upsert(ctx, File{RelPath: "a", DriveFileID: "d1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Upsert(ctx, File{RelPath: "b", DriveFileID: "d1"}); err == nil {
+		t.Error("duplicate drive_file_id accepted, want error")
+	}
+}

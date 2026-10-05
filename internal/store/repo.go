@@ -131,13 +131,12 @@ ON CONFLICT(rel_path) DO UPDATE SET
 	return nil
 }
 
+const fileColumns = `rel_path, drive_file_id, size, mtime, inode, local_md5, synced_md5, base_md5, base_revision_id`
+
 // Get returns the file with the given RelPath, or ErrNotFound.
 func (r *Repo) Get(ctx context.Context, relPath string) (File, error) {
 	v, err := r.do(ctx, func(db *sql.DB) (any, error) {
-		row := db.QueryRow(`
-SELECT rel_path, drive_file_id, size, mtime, inode, local_md5, synced_md5, base_md5, base_revision_id
-FROM files WHERE rel_path = ?`, relPath)
-		return scanFile(row)
+		return scanFile(db.QueryRow(`SELECT `+fileColumns+` FROM files WHERE rel_path = ?`, relPath))
 	})
 	if err != nil {
 		return File{}, fmt.Errorf("get %q: %w", relPath, err)
@@ -145,7 +144,45 @@ FROM files WHERE rel_path = ?`, relPath)
 	return v.(File), nil
 }
 
-func scanFile(row *sql.Row) (File, error) {
+// GetByDriveID returns the file with the given Drive file ID, or ErrNotFound.
+func (r *Repo) GetByDriveID(ctx context.Context, id string) (File, error) {
+	v, err := r.do(ctx, func(db *sql.DB) (any, error) {
+		return scanFile(db.QueryRow(`SELECT `+fileColumns+` FROM files WHERE drive_file_id = ?`, id))
+	})
+	if err != nil {
+		return File{}, fmt.Errorf("get by drive id: %w", err)
+	}
+	return v.(File), nil
+}
+
+// List returns every file ordered by RelPath.
+func (r *Repo) List(ctx context.Context) ([]File, error) {
+	v, err := r.do(ctx, func(db *sql.DB) (any, error) {
+		rows, err := db.Query(`SELECT ` + fileColumns + ` FROM files ORDER BY rel_path`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var files []File
+		for rows.Next() {
+			f, err := scanFile(rows)
+			if err != nil {
+				return nil, err
+			}
+			files = append(files, f)
+		}
+		return files, rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list files: %w", err)
+	}
+	return v.([]File), nil
+}
+
+// rowScanner is satisfied by *sql.Row and *sql.Rows.
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanFile(row rowScanner) (File, error) {
 	var (
 		f                                                   File
 		driveID, localMD5, syncedMD5, baseMD5, baseRevision sql.NullString

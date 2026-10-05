@@ -156,7 +156,7 @@ syncd put [--watch ID] [--root DIR] <file>
 - Disposable: Drive is the source of truth. Deleting the file loses only cache and the next open recreates it. It is never copied or synced.
 - Driver: `modernc.org/sqlite`, pure Go, no cgo.
 - `store.Open(path)` creates the directory (0700), applies the pragmas through the DSN (`journal_mode(WAL)`, `busy_timeout(5000)`, `foreign_keys(on)`, `synchronous(NORMAL)`), caps the pool at one connection and runs pending migrations. The caller must keep the `*sql.DB` in one owner goroutine; the wrapper arrives with the repository in ticket 8. SQL arguments are never logged.
-- First migration `00001_init.sql` creates `files`: `rel_path` (unique), `drive_file_id`, `size`, `mtime`, `inode`, `local_md5`, `synced_md5`, `base_md5`, `base_revision_id`. See ADR-004 for how later tables arrive.
+- First migration `00001_init.sql` creates `files`: `rel_path` (unique), `drive_file_id`, `size`, `mtime`, `inode`, `local_md5`, `synced_md5`, `base_md5`, `base_revision_id`. See ADR-004 for how later tables arrive. A unique partial index on `drive_file_id` ignores NULLs, so unuploaded rows do not collide.
 - `store.Status(db)` returns the migration version and the user table names (`files` and goose's `goose_db_version`).
 - `state.json` stays for now; folding the root folder ID into the database is a later cleanup.
 - Code: `internal/store/store.go`, `path.go`; the `db` command in `cmd/syncd/main.go`. Tests replace the `dbPath` var so they never touch the real data dir.
