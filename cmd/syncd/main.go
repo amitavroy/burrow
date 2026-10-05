@@ -202,6 +202,55 @@ func put(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// stat prints what Drive holds for one file, found by Drive ID or by its tags
+// (--watch ID plus the rel_path).
+func stat(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("stat", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	watch := fs.String("watch", "", "look the file up by watch ID and rel_path instead of Drive ID")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: syncd stat <file-id> | syncd stat --watch ID <rel_path>")
+		return 2
+	}
+
+	client, err := drive.LoadClient()
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	var info drive.FileInfo
+	if *watch != "" {
+		info, err = drive.FindByTags(ctx, client, drive.KeyringStore{}, drive.FileStore{}, *watch, fs.Arg(0))
+	} else {
+		info, err = drive.Stat(ctx, client, drive.KeyringStore{}, fs.Arg(0))
+	}
+	switch {
+	case errors.Is(err, drive.ErrNotSignedIn):
+		fmt.Fprintln(stderr, "syncd: not signed in; run `syncd login`")
+		return 1
+	case errors.Is(err, drive.ErrSessionExpired):
+		fmt.Fprintln(stderr, "syncd: session expired; run `syncd login` to sign in again")
+		return 1
+	case err != nil:
+		fmt.Fprintf(stderr, "syncd: stat failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "ID:       %s\n", info.ID)
+	fmt.Fprintf(stdout, "Name:     %s\n", info.Name)
+	fmt.Fprintf(stdout, "Size:     %d\n", info.Size)
+	fmt.Fprintf(stdout, "MD5:      %s\n", info.MD5)
+	fmt.Fprintf(stdout, "Revision: %s\n", info.RevisionID)
+	fmt.Fprintf(stdout, "watch_id: %s\n", info.WatchID)
+	fmt.Fprintf(stdout, "rel_path: %s\n", info.RelPath)
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -221,6 +270,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return root(stdout, stderr)
 	case "put":
 		return put(args[1:], stdout, stderr)
+	case "stat":
+		return stat(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2

@@ -221,3 +221,39 @@ func TestPut(t *testing.T) {
 		})
 	}
 }
+
+func TestStat(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantCode   int
+		wantStderr string
+	}{
+		{name: "no argument is a usage error", args: []string{"stat"}, wantCode: 2, wantStderr: "usage: syncd stat"},
+		{name: "two arguments is a usage error", args: []string{"stat", "a", "b"}, wantCode: 2, wantStderr: "usage: syncd stat"},
+		{name: "watch without rel_path is a usage error", args: []string{"stat", "--watch", "demo"}, wantCode: 2, wantStderr: "usage: syncd stat"},
+		{name: "unknown flag", args: []string{"stat", "--bogus", "id"}, wantCode: 2, wantStderr: "flag provided but not defined"},
+		{name: "by ID, not signed in", args: []string{"stat", "file-id"}, wantCode: 1, wantStderr: "run `syncd login`"},
+		{name: "by tags, not signed in", args: []string{"stat", "--watch", "demo", "notes.txt"}, wantCode: 1, wantStderr: "run `syncd login`"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyring.MockInit()
+			t.Setenv("BURROW_GOOGLE_CLIENT_ID", "id")
+			t.Setenv("BURROW_GOOGLE_CLIENT_SECRET", "secret")
+			var stdout, stderr bytes.Buffer
+
+			code := run(tt.args, &stdout, &stderr)
+
+			if code != tt.wantCode {
+				t.Errorf("exit code = %d, want %d (stderr %q)", code, tt.wantCode, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+		})
+	}
+}

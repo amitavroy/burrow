@@ -71,13 +71,29 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.listQ = r.URL.Query().Get("q")
 		files := []map[string]any{}
 		if f.existingID != "" {
-			files = append(files, map[string]any{"id": f.existingID})
+			files = append(files, existingFile(f.existingID))
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"files": files})
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/files/root-id"):
 		_, _ = w.Write([]byte(`{"id":"root-id","trashed":false}`))
+	case r.Method == http.MethodGet && strings.Contains(path, "/files/"):
+		id := path[strings.LastIndex(path, "/")+1:]
+		if id != f.existingID {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":404,"message":"File not found"}}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(existingFile(id))
 	default:
 		w.WriteHeader(http.StatusNotImplemented)
+	}
+}
+
+// existingFile is what the fake reports for the file that already exists.
+func existingFile(id string) map[string]any {
+	return map[string]any{
+		"id": id, "name": "notes.txt", "size": "42", "md5Checksum": "abc", "headRevisionId": "rev9",
+		"appProperties": map[string]string{"watch_id": "demo", "rel_path": "notes.txt"},
 	}
 }
 
@@ -277,6 +293,60 @@ func TestUploadErrors(t *testing.T) {
 			}
 			if strings.Contains(err.Error(), "fresh-access") || strings.Contains(err.Error(), "stored-refresh") {
 				t.Errorf("error leaks a token: %v", err)
+			}
+		})
+	}
+}
+
+func TestStatAndFindByTags(t *testing.T) {
+	tests := []struct {
+		name    string
+		stored  string
+		find    bool // use FindByTags instead of Stat by ID
+		wantErr error
+	}{
+		{name: "stat by ID"},
+		{name: "stat by ID, unknown file", wantErr: ErrFileNotFound},
+		{name: "find by tags", find: true},
+		{name: "find by tags, none match", find: true, wantErr: ErrFileNotFound},
+		{name: "not signed in", stored: "-", wantErr: ErrNotSignedIn},
+	}
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fd := &uploadDrive{existingID: "file-1"}
+			// The "unknown" and "none match" cases have nothing on Drive.
+			if tt.wantErr == ErrFileNotFound {
+				fd.existingID = ""
+				if !tt.find {
+					fd.existingID = "other"
+				}
+			}
+			cfg, extra := setup(t, fd)
+			token := "stored-refresh"
+			if tt.stored == "-" {
+				token = ""
+			}
+
+			var info FileInfo
+			var err error
+			if tt.find {
+				info, err = findFileByTags(context.Background(), cfg, &memStore{token: token}, &memRoots{id: "root-id"}, "demo", "notes.txt", extra...)
+			} else {
+				info, err = stat(context.Background(), cfg, &memStore{token: token}, "file-1", extra...)
+			}
+
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("case %d: err = %v, want %v", i, err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			want := FileInfo{ID: "file-1", Name: "notes.txt", Size: 42, MD5: "abc", RevisionID: "rev9", WatchID: "demo", RelPath: "notes.txt"}
+			if info != want {
+				t.Errorf("info = %+v, want %+v", info, want)
 			}
 		})
 	}
