@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/amitavroy/burrow/internal/drive"
+	"github.com/amitavroy/burrow/internal/store"
 	"github.com/joho/godotenv"
 	"golang.org/x/oauth2"
 )
@@ -251,6 +252,16 @@ func stat(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// db groups the state database commands.
+func db(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "path" {
+		fmt.Fprintln(stdout, store.DefaultPath())
+		return 0
+	}
+	fmt.Fprintln(stderr, "usage: syncd db path")
+	return 2
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -272,6 +283,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return put(args[1:], stdout, stderr)
 	case "stat":
 		return stat(args[1:], stdout, stderr)
+	case "db":
+		return db(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2
