@@ -28,7 +28,7 @@ Vertical slices; review after each.
 | --- | --- | --- | --- |
 | 1 | **Slice 1: `syncd put` uploads a file** | `internal/drive/upload.go`: extract `serviceFromStore`; add `Upload` with find-by-tags, create and update paths, plus the `uploadFile(ctx, cfg, ...)` twin | [x] |
 | 2 | | `cmd/syncd/main.go`: pass `args[1:]` to commands; `put` with `flag.NewFlagSet`, `rel_path` validation, error hints; prints file ID and web link | [x] |
-| 3 | | Tests: fake Drive (create vs update, tag query, `appProperties` body, 8 MB chunk, `invalid_grant`), `TestRun` cases for `put`. **Review point (demo: file shows in `MySync/`).** | [ ] |
+| 3 | | Tests: fake Drive (create vs update, tag query, `appProperties` body, 8 MB chunk, `invalid_grant`), `TestRun` cases for `put`. **Review point (demo: file shows in `MySync/`).** | [x] |
 | 4 | **Slice 2: `syncd stat` shows ID and tags** | `drive.Stat` and `drive.FindByTags` (shared with `Upload`) | [ ] |
 | 5 | | `stat` command (by ID or by `--watch` + `rel_path`), usage and error cases, tests. **Review point (checkpoint: ID and tags printed).** | [ ] |
 | 6 | **Slice 3: docs** | README and `docs/wiki/index.md` (new section plus usage block); mark ticket 6 `=> Done` in `requirements.md` | [ ] |

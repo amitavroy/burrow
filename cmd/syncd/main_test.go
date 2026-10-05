@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -138,5 +140,84 @@ func TestLogout(t *testing.T) {
 	stderr.Reset()
 	if code := run([]string{"logout"}, &stdout, &stderr); code != 0 {
 		t.Errorf("second logout exit code = %d, stderr = %q", code, stderr.String())
+	}
+}
+
+func TestRelPathFor(t *testing.T) {
+	root := t.TempDir()
+	tests := []struct {
+		name    string
+		file    string
+		root    string
+		want    string
+		wantErr bool
+	}{
+		{name: "no root uses the basename", file: "/some/where/notes.txt", want: "notes.txt"},
+		{name: "file in root", file: filepath.Join(root, "notes.txt"), root: root, want: "notes.txt"},
+		{name: "nested file uses slashes", file: filepath.Join(root, "a", "b", "notes.txt"), root: root, want: "a/b/notes.txt"},
+		{name: "file outside root", file: filepath.Join(filepath.Dir(root), "other.txt"), root: root, wantErr: true},
+		{name: "dot-dot escape", file: filepath.Join(root, "..", "other.txt"), root: root, wantErr: true},
+		{name: "name starting with dots is fine", file: filepath.Join(root, "..hidden"), root: root, want: "..hidden"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := relPathFor(tt.file, tt.root)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("rel = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPut(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tests := []struct {
+		name       string
+		args       []string
+		signedIn   bool
+		wantCode   int
+		wantStderr string
+	}{
+		{name: "no file is a usage error", args: []string{"put"}, wantCode: 2, wantStderr: "usage: syncd put"},
+		{name: "two files is a usage error", args: []string{"put", file, file}, wantCode: 2, wantStderr: "usage: syncd put"},
+		{name: "unknown flag", args: []string{"put", "--bogus", file}, wantCode: 2, wantStderr: "flag provided but not defined"},
+		{name: "file outside root", args: []string{"put", "--root", filepath.Join(dir, "sub"), file}, wantCode: 2, wantStderr: "outside the root"},
+		{name: "not signed in gives the login hint", args: []string{"put", file}, wantCode: 1, wantStderr: "run `syncd login`"},
+		{name: "missing file exits 1", args: []string{"put", filepath.Join(dir, "nope.txt")}, signedIn: true, wantCode: 1, wantStderr: "put failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyring.MockInit()
+			t.Setenv("BURROW_GOOGLE_CLIENT_ID", "id")
+			t.Setenv("BURROW_GOOGLE_CLIENT_SECRET", "secret")
+			if tt.signedIn {
+				if err := (drive.KeyringStore{}).Save("secret-refresh-token"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var stdout, stderr bytes.Buffer
+
+			code := run(tt.args, &stdout, &stderr)
+
+			if code != tt.wantCode {
+				t.Errorf("exit code = %d, want %d (stderr %q)", code, tt.wantCode, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
+			}
+			if stdout.Len() != 0 {
+				t.Errorf("stdout = %q, want empty", stdout.String())
+			}
+			if strings.Contains(stderr.String(), "secret-refresh-token") {
+				t.Errorf("stderr leaks the token: %q", stderr.String())
+			}
+		})
 	}
 }
