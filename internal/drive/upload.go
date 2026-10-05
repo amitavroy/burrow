@@ -2,7 +2,9 @@ package drive
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
@@ -25,6 +27,11 @@ const (
 	tagWatchID = "watch_id"
 	tagRelPath = "rel_path"
 )
+
+// ErrFileNotFound means Drive has no such file that this app can see. With the
+// drive.file scope a file created by something else looks the same as a
+// missing one.
+var ErrFileNotFound = errors.New("file not found")
 
 // FileInfo is what Drive reports about an uploaded file.
 type FileInfo struct {
@@ -94,6 +101,56 @@ func uploadFile(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, root
 		return FileInfo{}, sessionError(fmt.Errorf("upload %s: %w", relPath, err))
 	}
 	return fileInfo(out), nil
+}
+
+// Stat returns what Drive reports about the file with the given ID, or
+// ErrFileNotFound. Sign-in errors are as for Upload. extra options are for
+// tests.
+func Stat(ctx context.Context, client Client, tokens TokenStore, id string, extra ...option.ClientOption) (FileInfo, error) {
+	return stat(ctx, client.OAuthConfig(""), tokens, id, extra...)
+}
+
+func stat(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, id string, extra ...option.ClientOption) (FileInfo, error) {
+	svc, err := serviceFromStore(ctx, cfg, tokens, extra...)
+	if err != nil {
+		return FileInfo{}, err
+	}
+	f, err := svc.Files.Get(id).Fields(uploadFields).Context(ctx).Do()
+	var gerr *googleapi.Error
+	if errors.As(err, &gerr) && gerr.Code == http.StatusNotFound {
+		return FileInfo{}, fmt.Errorf("%w: %s", ErrFileNotFound, id)
+	}
+	if err != nil {
+		return FileInfo{}, sessionError(fmt.Errorf("stat %s: %w", id, err))
+	}
+	return fileInfo(f), nil
+}
+
+// FindByTags returns the live file in MySync tagged with watchID and relPath,
+// or ErrFileNotFound. It is the same lookup Upload uses to decide between
+// create and update. Sign-in errors are as for Upload. extra options are for
+// tests.
+func FindByTags(ctx context.Context, client Client, tokens TokenStore, roots RootStore, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+	return findFileByTags(ctx, client.OAuthConfig(""), tokens, roots, watchID, relPath, extra...)
+}
+
+func findFileByTags(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, roots RootStore, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+	svc, err := serviceFromStore(ctx, cfg, tokens, extra...)
+	if err != nil {
+		return FileInfo{}, err
+	}
+	rootID, err := ensureRootWith(ctx, svc, roots)
+	if err != nil {
+		return FileInfo{}, sessionError(err)
+	}
+	f, err := findByTags(ctx, svc, rootID, watchID, relPath)
+	if err != nil {
+		return FileInfo{}, sessionError(err)
+	}
+	if f == nil {
+		return FileInfo{}, fmt.Errorf("%w: watch %q, path %q", ErrFileNotFound, watchID, relPath)
+	}
+	return fileInfo(f), nil
 }
 
 // findByTags returns the live file in parent carrying the given tags, or nil.
