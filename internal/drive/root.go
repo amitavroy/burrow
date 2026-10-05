@@ -32,15 +32,25 @@ func EnsureRoot(ctx context.Context, client Client, tokens TokenStore, roots Roo
 }
 
 func ensureRoot(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, roots RootStore, extra ...option.ClientOption) (string, error) {
+	svc, err := serviceFromStore(ctx, cfg, tokens, extra...)
+	if err != nil {
+		return "", err
+	}
+	return ensureRootWith(ctx, svc, roots)
+}
+
+// serviceFromStore builds a Drive service from the stored refresh token. It
+// returns ErrNotSignedIn when nothing is stored.
+func serviceFromStore(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, extra ...option.ClientOption) (*drv.Service, error) {
 	rt, err := tokens.Load()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	svc, err := newService(ctx, cfg, TokenFromRefresh(rt), extra...)
-	if err != nil {
-		return "", err
-	}
+	return newService(ctx, cfg, TokenFromRefresh(rt), extra...)
+}
 
+// ensureRootWith is ensureRoot on an already-built service.
+func ensureRootWith(ctx context.Context, svc *drv.Service, roots RootStore) (string, error) {
 	// The cache is disposable, so an unreadable one is the same as an empty one.
 	if cached, err := roots.Load(); err == nil {
 		ok, err := rootUsable(ctx, svc, cached)
