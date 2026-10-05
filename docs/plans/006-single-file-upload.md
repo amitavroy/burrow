@@ -32,7 +32,7 @@ Vertical slices; review after each.
 | 4 | **Slice 2: `syncd stat` shows ID and tags** | `drive.Stat` and `drive.FindByTags` (shared with `Upload`) | [x] |
 | 5 | | `stat` command (by ID or by `--watch` + `rel_path`), usage and error cases, tests. **Review point (checkpoint: ID and tags printed).** | [x] |
 | 6 | **Slice 3: docs** | README and `docs/wiki/index.md` (new section plus usage block); mark ticket 6 `=> Done` in `requirements.md` | [x] |
-| 7 | | Demo: put, stat, edit and put again (same ID, one file), logout then put. **Review point.** | [ ] |
+| 7 | | Demo: put, stat, edit and put again (same ID, one file), logout then put. **Review point.** | [x] |
 
 ## Files to create/modify
 
