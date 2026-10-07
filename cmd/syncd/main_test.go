@@ -307,3 +307,56 @@ func TestDB(t *testing.T) {
 		})
 	}
 }
+
+func TestScan(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"b.txt", "a/c.txt"} {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, "MySync"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, "MySync", "h.txt"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	t.Cleanup(func() { homeDir = old })
+
+	file := filepath.Join(root, "b.txt")
+	tests := []struct {
+		name       string
+		args       []string
+		wantCode   int
+		wantStdout string
+		wantStderr string
+	}{
+		{"lists files sorted", []string{"scan", "--dry-run", "--root", root}, 0, "a/c.txt\nb.txt\n", ""},
+		{"default root is ~/MySync", []string{"scan", "--dry-run"}, 0, "h.txt\n", ""},
+		{"needs --dry-run", []string{"scan", "--root", root}, 2, "", "usage: syncd scan"},
+		{"missing root", []string{"scan", "--dry-run", "--root", filepath.Join(root, "nope")}, 1, "", "scan failed"},
+		{"file as root", []string{"scan", "--dry-run", "--root", file}, 1, "", "not a directory"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tt.args, &stdout, &stderr)
+			if code != tt.wantCode {
+				t.Errorf("exit code = %d, want %d (stderr %q)", code, tt.wantCode, stderr.String())
+			}
+			if stdout.String() != tt.wantStdout {
+				t.Errorf("stdout = %q, want %q", stdout.String(), tt.wantStdout)
+			}
+			if !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
+			}
+		})
+	}
+}

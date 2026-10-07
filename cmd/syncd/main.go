@@ -13,6 +13,7 @@ import (
 
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
+	burrowsync "github.com/amitavroy/burrow/internal/sync"
 	"github.com/joho/godotenv"
 	"golang.org/x/oauth2"
 )
@@ -292,6 +293,44 @@ func dbStatus(stdout, stderr io.Writer) int {
 	return 0
 }
 
+// homeDir locates the user's home directory. Tests replace it.
+var homeDir = os.UserHomeDir
+
+// scan lists the files under the sync root that a sync would upload. It only
+// reads; --dry-run is required so the command is never mistaken for a sync.
+func scan(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("scan", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	dryRun := fs.Bool("dry-run", false, "list the files that would upload, without uploading")
+	rootDir := fs.String("root", "", "sync root to scan (default ~/MySync)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if !*dryRun || fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: syncd scan --dry-run [--root DIR]")
+		return 2
+	}
+	root := *rootDir
+	if root == "" {
+		home, err := homeDir()
+		if err != nil {
+			fmt.Fprintf(stderr, "syncd: scan failed: %v\n", err)
+			return 1
+		}
+		root = filepath.Join(home, "MySync")
+	}
+
+	entries, err := burrowsync.Scan(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: scan failed: %v\n", err)
+		return 1
+	}
+	for _, e := range entries {
+		fmt.Fprintln(stdout, e.RelPath)
+	}
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -315,6 +354,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return stat(args[1:], stdout, stderr)
 	case "db":
 		return db(args[1:], stdout, stderr)
+	case "scan":
+		return scan(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2
