@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,14 +22,22 @@ import (
 	"google.golang.org/api/option"
 )
 
+// fakeDir is a folder the fake Drive holds.
+type fakeDir struct{ id, name, parent string }
+
 // uploadDrive fakes the Drive routes Upload touches: the token endpoint,
-// files.get for the cached root, the tag lookup, and resumable create/update
-// uploads. existingID, when set, is what the tag lookup returns.
+// files.get for the cached root, the tag lookup, folder lookup and creation,
+// and resumable create/update uploads. existingID, when set, is what the tag
+// lookup returns. dirs are the folders that already exist, oldest first.
 type uploadDrive struct {
 	mu         sync.Mutex
 	url        string
 	existingID string
 	tokenBody  string // when set, the token endpoint answers 400 with it
+	dirs       []fakeDir
+
+	folderQs    []string         // folder lookup queries
+	createdDirs []map[string]any // folder create bodies, in order
 
 	listQ    string
 	meta     map[string]any
@@ -67,6 +76,30 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&f.meta)
 		w.Header().Set("Location", f.url+"/session/x")
 		w.WriteHeader(http.StatusOK)
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/files"):
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		f.createdDirs = append(f.createdDirs, body)
+		id := fmt.Sprintf("dir-%d", len(f.createdDirs))
+		parents, _ := body["parents"].([]any)
+		parent, _ := parents[0].(string)
+		f.dirs = append(f.dirs, fakeDir{id: id, name: body["name"].(string), parent: parent})
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": id})
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/files") && strings.Contains(r.URL.Query().Get("q"), "mimeType = '"+folderMimeType+"'"):
+		q := r.URL.Query().Get("q")
+		f.folderQs = append(f.folderQs, q)
+		name := unescapeQuery(folderNameRe.FindStringSubmatch(q)[1])
+		parent := folderParentRe.FindStringSubmatch(q)[1]
+		files := []map[string]any{}
+		for _, d := range f.dirs {
+			if d.name == name && d.parent == parent {
+				files = append(files, map[string]any{"id": d.id})
+			}
+		}
+		if len(files) > 1 && r.URL.Query().Get("pageSize") == "1" {
+			files = files[:1] // Drive returns only a page; the client asks for one
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"files": files})
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/files"):
 		f.listQ = r.URL.Query().Get("q")
 		files := []map[string]any{}
@@ -87,6 +120,16 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusNotImplemented)
 	}
+}
+
+var (
+	folderNameRe   = regexp.MustCompile(`name = '((?:[^'\\]|\\.)*)'`)
+	folderParentRe = regexp.MustCompile(`'([^']+)' in parents`)
+)
+
+// unescapeQuery undoes escapeQuery.
+func unescapeQuery(s string) string {
+	return strings.NewReplacer(`\\`, `\`, `\'`, `'`).Replace(s)
 }
 
 // existingFile is what the fake reports for the file that already exists.
@@ -187,10 +230,11 @@ func TestUpload(t *testing.T) {
 		wantID     string
 		wantChunks int // resumable chunk requests; 0 = sent as one multipart request
 		wantName   string
+		wantParent string // parent of a created file; "" means root-id
 	}{
 		{name: "creates a new file", size: 100, relPath: "notes.txt", wantMethod: http.MethodPost, wantID: "new-file", wantChunks: 0, wantName: "notes.txt"},
 		{name: "second put updates the same ID", size: 100, existingID: "old-id", relPath: "notes.txt", wantMethod: http.MethodPatch, wantID: "old-id", wantChunks: 0},
-		{name: "nested rel_path names the file by basename", size: 100, relPath: "a/b/notes.txt", wantMethod: http.MethodPost, wantID: "new-file", wantChunks: 0, wantName: "notes.txt"},
+		{name: "nested rel_path names the file by basename", size: 100, relPath: "a/b/notes.txt", wantMethod: http.MethodPost, wantID: "new-file", wantChunks: 0, wantName: "notes.txt", wantParent: "dir-2"},
 		{name: "file over 8 MB is sent in chunks", size: 8<<20 + 1000, relPath: "notes.txt", wantMethod: http.MethodPost, wantID: "new-file", wantChunks: 2, wantName: "notes.txt"},
 	}
 	for _, tt := range tests {
@@ -220,15 +264,22 @@ func TestUpload(t *testing.T) {
 				if fd.meta["name"] != tt.wantName {
 					t.Errorf("name = %v, want %s", fd.meta["name"], tt.wantName)
 				}
+				wantParent := tt.wantParent
+				if wantParent == "" {
+					wantParent = "root-id"
+				}
 				parents, _ := fd.meta["parents"].([]any)
-				if len(parents) != 1 || parents[0] != "root-id" {
-					t.Errorf("parents = %v, want [root-id]", fd.meta["parents"])
+				if len(parents) != 1 || parents[0] != wantParent {
+					t.Errorf("parents = %v, want [%s]", fd.meta["parents"], wantParent)
 				}
 			}
-			for _, part := range []string{"key='rel_path' and value='" + tt.relPath + "'", "trashed = false", "'root-id' in parents"} {
+			for _, part := range []string{"key='rel_path' and value='" + tt.relPath + "'", "trashed = false", "mimeType != '" + folderMimeType + "'"} {
 				if !strings.Contains(fd.listQ, part) {
 					t.Errorf("tag query %q missing %q", fd.listQ, part)
 				}
+			}
+			if strings.Contains(fd.listQ, "in parents") {
+				t.Errorf("tag query %q is restricted to a parent", fd.listQ)
 			}
 			if strings.Contains(fd.listQ, "watch_id") {
 				t.Errorf("tag query %q still mentions watch_id", fd.listQ)
@@ -332,7 +383,7 @@ func TestStatAndFindByTags(t *testing.T) {
 			var info FileInfo
 			var err error
 			if tt.find {
-				info, err = FindByTags(context.Background(), client, signedIn(t, token), cacheAt(t, "root-id"), "notes.txt", extra...)
+				info, err = FindByTags(context.Background(), client, signedIn(t, token), "notes.txt", extra...)
 			} else {
 				info, err = Stat(context.Background(), client, signedIn(t, token), "file-1", extra...)
 			}
@@ -349,6 +400,130 @@ func TestStatAndFindByTags(t *testing.T) {
 			want := FileInfo{ID: "file-1", Name: "notes.txt", Size: 42, MD5: "abc", RevisionID: "rev9", RelPath: "notes.txt"}
 			if info != want {
 				t.Errorf("info = %+v, want %+v", info, want)
+			}
+		})
+	}
+}
+
+func TestUploadFolders(t *testing.T) {
+	tests := []struct {
+		name        string
+		relPath     string
+		dirs        []fakeDir
+		existingID  string
+		wantCreated []string // "name@parent", in order
+		wantFolderQ int      // folder lookup queries
+		wantParent  string   // parent of the created file
+		wantMethod  string
+	}{
+		{
+			name: "no directory means no folder calls", relPath: "c.txt",
+			wantFolderQ: 0, wantParent: "root-id", wantMethod: http.MethodPost,
+		},
+		{
+			name: "creates one folder per missing level", relPath: "a/b/c.txt",
+			wantCreated: []string{"a@root-id", "b@dir-1"}, wantFolderQ: 2, wantParent: "dir-2", wantMethod: http.MethodPost,
+		},
+		{
+			name: "reuses folders that exist", relPath: "a/b/c.txt",
+			dirs:        []fakeDir{{"A", "a", "root-id"}, {"B", "b", "A"}},
+			wantFolderQ: 2, wantParent: "B", wantMethod: http.MethodPost,
+		},
+		{
+			name: "creates only the missing level", relPath: "a/b/c.txt",
+			dirs:        []fakeDir{{"A", "a", "root-id"}},
+			wantCreated: []string{"b@A"}, wantFolderQ: 2, wantParent: "dir-1", wantMethod: http.MethodPost,
+		},
+		{
+			name: "a folder of the same name under another parent is not reused", relPath: "a/c.txt",
+			dirs:        []fakeDir{{"X", "a", "elsewhere"}},
+			wantCreated: []string{"a@root-id"}, wantFolderQ: 1, wantParent: "dir-1", wantMethod: http.MethodPost,
+		},
+		{
+			name: "duplicate folders: the oldest wins", relPath: "a/c.txt",
+			dirs:        []fakeDir{{"old", "a", "root-id"}, {"new", "a", "root-id"}},
+			wantFolderQ: 1, wantParent: "old", wantMethod: http.MethodPost,
+		},
+		{
+			name: "folder names with a quote and a backslash", relPath: `it's\x/c.txt`,
+			wantCreated: []string{`it's\x@root-id`}, wantFolderQ: 1, wantParent: "dir-1", wantMethod: http.MethodPost,
+		},
+		{
+			name: "an update makes no folder calls", relPath: "a/b/c.txt", existingID: "old-id",
+			wantFolderQ: 0, wantMethod: http.MethodPatch,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fd := &uploadDrive{existingID: tt.existingID, dirs: tt.dirs}
+			client, extra := setup(t, fd)
+
+			_, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), writeFile(t, 10), tt.relPath, extra...)
+			if err != nil {
+				t.Fatalf("Upload: %v", err)
+			}
+
+			fd.mu.Lock()
+			defer fd.mu.Unlock()
+			var created []string
+			for _, c := range fd.createdDirs {
+				parents, _ := c["parents"].([]any)
+				created = append(created, fmt.Sprintf("%v@%v", c["name"], parents[0]))
+				if c["mimeType"] != folderMimeType {
+					t.Errorf("folder create mimeType = %v", c["mimeType"])
+				}
+			}
+			if strings.Join(created, ",") != strings.Join(tt.wantCreated, ",") {
+				t.Errorf("created folders = %v, want %v", created, tt.wantCreated)
+			}
+			if len(fd.folderQs) != tt.wantFolderQ {
+				t.Errorf("folder lookups = %d (%v), want %d", len(fd.folderQs), fd.folderQs, tt.wantFolderQ)
+			}
+			if fd.method != tt.wantMethod {
+				t.Errorf("method = %s, want %s", fd.method, tt.wantMethod)
+			}
+			if tt.wantMethod == http.MethodPost {
+				parents, _ := fd.meta["parents"].([]any)
+				if len(parents) != 1 || parents[0] != tt.wantParent {
+					t.Errorf("file parents = %v, want [%s]", fd.meta["parents"], tt.wantParent)
+				}
+				if fd.meta["name"] != "c.txt" {
+					t.Errorf("file name = %v, want c.txt", fd.meta["name"])
+				}
+			}
+		})
+	}
+}
+
+func TestUploadFolderQueryEscaped(t *testing.T) {
+	fd := &uploadDrive{}
+	client, extra := setup(t, fd)
+
+	if _, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), writeFile(t, 1), `it's\x/c.txt`, extra...); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	if len(fd.folderQs) != 1 || !strings.Contains(fd.folderQs[0], `name = 'it\'s\\x'`) {
+		t.Errorf("folder query not escaped: %v", fd.folderQs)
+	}
+}
+
+func TestUploadRejectsBadRelPath(t *testing.T) {
+	for _, rel := range []string{"", "/a.txt", "a/../b.txt", "../b.txt", "./a.txt", "a//b.txt", "a/", ".", ".."} {
+		t.Run(rel, func(t *testing.T) {
+			fd := &uploadDrive{}
+			client, extra := setup(t, fd)
+
+			_, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), writeFile(t, 1), rel, extra...)
+
+			if err == nil || !strings.Contains(err.Error(), "invalid rel_path") {
+				t.Fatalf("err = %v, want invalid rel_path", err)
+			}
+			fd.mu.Lock()
+			defer fd.mu.Unlock()
+			if len(fd.authz) != 0 {
+				t.Errorf("made %d Drive requests before rejecting the path", len(fd.authz))
 			}
 		})
 	}

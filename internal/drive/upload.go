@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path"
 	"strings"
 
 	drv "google.golang.org/api/drive/v3"
@@ -42,21 +43,26 @@ type FileInfo struct {
 	WebLink    string
 }
 
-// Upload sends the local file at path into the MySync folder, tagged with
-// relPath. If a live file with the same tag is already there its content is
-// replaced (same Drive ID), otherwise a new file is created. It
-// returns ErrNotSignedIn or ErrSessionExpired like EnsureRoot. extra options
-// are for tests.
-func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, path, relPath string, extra ...option.ClientOption) (FileInfo, error) {
-	f, err := os.Open(path)
+// Upload sends the local file at localPath to Drive, tagged with relPath. If a live
+// file with the same tag exists its content is replaced (same Drive ID),
+// otherwise a new file is created in the folder that mirrors relPath's
+// directory under MySync, creating any missing folders on the way. relPath
+// must be slash-form with no empty, "." or ".." component. It returns
+// ErrNotSignedIn or ErrSessionExpired like EnsureRoot. extra options are for
+// tests.
+func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, localPath, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+	if err := validateRelPath(relPath); err != nil {
+		return FileInfo{}, err
+	}
+	f, err := os.Open(localPath)
 	if err != nil {
-		return FileInfo{}, fmt.Errorf("open %s: %w", path, err)
+		return FileInfo{}, fmt.Errorf("open %s: %w", localPath, err)
 	}
 	defer f.Close()
 	if st, err := f.Stat(); err != nil {
-		return FileInfo{}, fmt.Errorf("stat %s: %w", path, err)
+		return FileInfo{}, fmt.Errorf("stat %s: %w", localPath, err)
 	} else if st.IsDir() {
-		return FileInfo{}, fmt.Errorf("%s is a directory", path)
+		return FileInfo{}, fmt.Errorf("%s is a directory", localPath)
 	}
 
 	svc, err := serviceFromStore(ctx, client, tokens, extra...)
@@ -68,7 +74,7 @@ func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileS
 		return FileInfo{}, sessionError(err)
 	}
 
-	existing, err := findByTags(ctx, svc, rootID, relPath)
+	existing, err := findByTags(ctx, svc, relPath)
 	if err != nil {
 		return FileInfo{}, sessionError(err)
 	}
@@ -80,13 +86,13 @@ func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileS
 		out, err = svc.Files.Update(existing.Id, &drv.File{AppProperties: tags}).
 			Media(f, media).Fields(uploadFields).Context(ctx).Do()
 	} else {
-		name := relPath
-		if i := strings.LastIndex(name, "/"); i >= 0 {
-			name = name[i+1:]
+		dirID, err := ensureDir(ctx, svc, rootID, path.Dir(relPath))
+		if err != nil {
+			return FileInfo{}, sessionError(err)
 		}
 		out, err = svc.Files.Create(&drv.File{
-			Name:          name,
-			Parents:       []string{rootID},
+			Name:          path.Base(relPath),
+			Parents:       []string{dirID},
 			AppProperties: tags,
 		}).Media(f, media).Fields(uploadFields).Context(ctx).Do()
 	}
@@ -115,20 +121,16 @@ func Stat(ctx context.Context, client Client, tokens KeyringStore, id string, ex
 	return fileInfo(f), nil
 }
 
-// FindByTags returns the live file in MySync tagged with relPath,
-// or ErrFileNotFound. It is the same lookup Upload uses to decide between
+// FindByTags returns the live file tagged with relPath, wherever it sits in
+// Drive, or ErrFileNotFound. It creates nothing. It is the same lookup Upload uses to decide between
 // create and update. Sign-in errors are as for Upload. extra options are for
 // tests.
-func FindByTags(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+func FindByTags(ctx context.Context, client Client, tokens KeyringStore, relPath string, extra ...option.ClientOption) (FileInfo, error) {
 	svc, err := serviceFromStore(ctx, client, tokens, extra...)
 	if err != nil {
 		return FileInfo{}, err
 	}
-	rootID, err := ensureRootWith(ctx, svc, roots)
-	if err != nil {
-		return FileInfo{}, sessionError(err)
-	}
-	f, err := findByTags(ctx, svc, rootID, relPath)
+	f, err := findByTags(ctx, svc, relPath)
 	if err != nil {
 		return FileInfo{}, sessionError(err)
 	}
@@ -138,18 +140,67 @@ func FindByTags(ctx context.Context, client Client, tokens KeyringStore, roots F
 	return fileInfo(f), nil
 }
 
-// findByTags returns the live file in parent carrying the rel_path tag, or nil.
-// Drive allows duplicate names, so the tag (not the name) identifies the file;
-// if several match the oldest wins. Other tags, such as the watch_id that
-// earlier versions wrote, are ignored.
-func findByTags(ctx context.Context, svc *drv.Service, parent, relPath string) (*drv.File, error) {
-	q := fmt.Sprintf("appProperties has { key='%s' and value='%s' } and trashed = false and '%s' in parents",
-		tagRelPath, escapeQuery(relPath), parent)
+// findByTags returns the live file carrying the rel_path tag, wherever it
+// lives, or nil. Folders are skipped. Drive allows duplicate names, so the tag
+// (not the name or the parent) identifies the file; if several match the
+// oldest wins. Other tags, such as the watch_id that earlier versions wrote,
+// are ignored.
+func findByTags(ctx context.Context, svc *drv.Service, relPath string) (*drv.File, error) {
+	q := fmt.Sprintf("appProperties has { key='%s' and value='%s' } and trashed = false and mimeType != '%s'",
+		tagRelPath, escapeQuery(relPath), folderMimeType)
 	f, err := oldestMatch(ctx, svc, q, uploadFields)
 	if err != nil {
 		return nil, fmt.Errorf("find %s: %w", relPath, err)
 	}
 	return f, nil
+}
+
+// validateRelPath rejects a rel_path that is empty, absolute or has an empty,
+// "." or ".." component. Only a slash-form path relative to the root is valid.
+func validateRelPath(relPath string) error {
+	if relPath == "" || strings.HasPrefix(relPath, "/") {
+		return fmt.Errorf("invalid rel_path %q: must be relative and non-empty", relPath)
+	}
+	for _, part := range strings.Split(relPath, "/") {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("invalid rel_path %q: empty, %q or %q component", relPath, ".", "..")
+		}
+	}
+	return nil
+}
+
+// ensureDir returns the Drive ID of the folder that mirrors relDir under the
+// MySync folder rootID, creating missing folders from the top down. "." is the
+// root itself. A folder is found by name and parent (oldest wins when Drive
+// holds duplicates); folders carry no tags, because the tree already implies
+// the path.
+func ensureDir(ctx context.Context, svc *drv.Service, rootID, relDir string) (string, error) {
+	if relDir == "." || relDir == "" {
+		return rootID, nil
+	}
+	parentID, err := ensureDir(ctx, svc, rootID, path.Dir(relDir))
+	if err != nil {
+		return "", err
+	}
+	name := path.Base(relDir)
+	q := fmt.Sprintf("name = '%s' and mimeType = '%s' and '%s' in parents and trashed = false",
+		escapeQuery(name), folderMimeType, parentID)
+	found, err := oldestMatch(ctx, svc, q, "id")
+	if err != nil {
+		return "", fmt.Errorf("find folder %s: %w", relDir, err)
+	}
+	if found != nil {
+		return found.Id, nil
+	}
+	created, err := svc.Files.Create(&drv.File{
+		Name:     name,
+		MimeType: folderMimeType,
+		Parents:  []string{parentID},
+	}).Fields("id").Context(ctx).Do()
+	if err != nil {
+		return "", fmt.Errorf("create folder %s: %w", relDir, err)
+	}
+	return created.Id, nil
 }
 
 // escapeQuery escapes a value for use inside a single-quoted Drive query string.

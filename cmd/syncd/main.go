@@ -217,7 +217,7 @@ func stat(args []string, stdout, stderr io.Writer) int {
 
 	var info drive.FileInfo
 	if *byPath {
-		info, err = drive.FindByTags(ctx, client, drive.KeyringStore{}, drive.FileStore{}, fs.Arg(0))
+		info, err = drive.FindByTags(ctx, client, drive.KeyringStore{}, fs.Arg(0))
 	} else {
 		info, err = drive.Stat(ctx, client, drive.KeyringStore{}, fs.Arg(0))
 	}
