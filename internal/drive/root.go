@@ -26,7 +26,7 @@ const (
 // Drive confirms the folder still exists and is not in the trash; otherwise the
 // folder is looked up (or created) and the cache rewritten. extra options are
 // for tests.
-func EnsureRoot(ctx context.Context, client Client, tokens TokenStore, roots RootStore, extra ...option.ClientOption) (string, error) {
+func EnsureRoot(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, extra ...option.ClientOption) (string, error) {
 	svc, err := serviceFromStore(ctx, client, tokens, extra...)
 	if err != nil {
 		return "", err
@@ -36,7 +36,7 @@ func EnsureRoot(ctx context.Context, client Client, tokens TokenStore, roots Roo
 
 // serviceFromStore builds a Drive service from the stored refresh token. It
 // returns ErrNotSignedIn when nothing is stored.
-func serviceFromStore(ctx context.Context, client Client, tokens TokenStore, extra ...option.ClientOption) (*drv.Service, error) {
+func serviceFromStore(ctx context.Context, client Client, tokens KeyringStore, extra ...option.ClientOption) (*drv.Service, error) {
 	rt, err := tokens.Load()
 	if err != nil {
 		return nil, err
@@ -45,7 +45,7 @@ func serviceFromStore(ctx context.Context, client Client, tokens TokenStore, ext
 }
 
 // ensureRootWith is ensureRoot on an already-built service.
-func ensureRootWith(ctx context.Context, svc *drv.Service, roots RootStore) (string, error) {
+func ensureRootWith(ctx context.Context, svc *drv.Service, roots FileStore) (string, error) {
 	// The cache is disposable, so an unreadable one is the same as an empty one.
 	if cached, err := roots.Load(); err == nil {
 		ok, err := rootUsable(ctx, svc, cached)

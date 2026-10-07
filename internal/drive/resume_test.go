@@ -8,20 +8,23 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
 )
 
-type memStore struct{ token string }
-
-func (m *memStore) Load() (string, error) {
-	if m.token == "" {
-		return "", ErrNotSignedIn
+// signedIn returns a KeyringStore backed by the in-memory mock keychain, with
+// token saved in it (nothing saved when token is empty).
+func signedIn(t *testing.T, token string) KeyringStore {
+	t.Helper()
+	keyring.MockInit()
+	if token != "" {
+		if err := (KeyringStore{}).Save(token); err != nil {
+			t.Fatal(err)
+		}
 	}
-	return m.token, nil
+	return KeyringStore{}
 }
-func (m *memStore) Save(t string) error { m.token = t; return nil }
-func (m *memStore) Delete() error       { m.token = ""; return nil }
 
 func TestResume(t *testing.T) {
 	tests := []struct {
@@ -86,7 +89,7 @@ func TestResume(t *testing.T) {
 
 			client := Client{ID: "id", Secret: "secret", Endpoint: &oauth2.Endpoint{TokenURL: srv.URL + "/token"}}
 
-			got, err := Resume(context.Background(), client, &memStore{token: tt.stored}, option.WithEndpoint(srv.URL))
+			got, err := Resume(context.Background(), client, signedIn(t, tt.stored), option.WithEndpoint(srv.URL))
 
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {

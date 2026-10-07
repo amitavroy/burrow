@@ -49,7 +49,7 @@ type FileInfo struct {
 // content is replaced (same Drive ID), otherwise a new file is created. It
 // returns ErrNotSignedIn or ErrSessionExpired like EnsureRoot. extra options
 // are for tests.
-func Upload(ctx context.Context, client Client, tokens TokenStore, roots RootStore, path, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, path, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return FileInfo{}, fmt.Errorf("open %s: %w", path, err)
@@ -101,7 +101,7 @@ func Upload(ctx context.Context, client Client, tokens TokenStore, roots RootSto
 // Stat returns what Drive reports about the file with the given ID, or
 // ErrFileNotFound. Sign-in errors are as for Upload. extra options are for
 // tests.
-func Stat(ctx context.Context, client Client, tokens TokenStore, id string, extra ...option.ClientOption) (FileInfo, error) {
+func Stat(ctx context.Context, client Client, tokens KeyringStore, id string, extra ...option.ClientOption) (FileInfo, error) {
 	svc, err := serviceFromStore(ctx, client, tokens, extra...)
 	if err != nil {
 		return FileInfo{}, err
@@ -121,7 +121,7 @@ func Stat(ctx context.Context, client Client, tokens TokenStore, id string, extr
 // or ErrFileNotFound. It is the same lookup Upload uses to decide between
 // create and update. Sign-in errors are as for Upload. extra options are for
 // tests.
-func FindByTags(ctx context.Context, client Client, tokens TokenStore, roots RootStore, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+func FindByTags(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
 	svc, err := serviceFromStore(ctx, client, tokens, extra...)
 	if err != nil {
 		return FileInfo{}, err

@@ -29,7 +29,7 @@ func main() {
 
 // persistToken stores the refresh token from a fresh sign-in. Only the refresh
 // token is kept; access tokens are re-derived by refreshing.
-func persistToken(store drive.TokenStore, tok *oauth2.Token) error {
+func persistToken(store drive.KeyringStore, tok *oauth2.Token) error {
 	if tok.RefreshToken == "" {
 		return errors.New("Google returned no refresh token; try signing in again")
 	}

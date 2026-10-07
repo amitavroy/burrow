@@ -28,7 +28,7 @@ func TokenFromRefresh(refreshToken string) *oauth2.Token {
 // Resume signs in from the stored refresh token, with no browser, and returns
 // the account email. It returns ErrNotSignedIn when nothing is stored and
 // ErrSessionExpired when Google rejects the token.
-func Resume(ctx context.Context, client Client, store TokenStore, extra ...option.ClientOption) (string, error) {
+func Resume(ctx context.Context, client Client, store KeyringStore, extra ...option.ClientOption) (string, error) {
 	rt, err := store.Load()
 	if err != nil {
 		return "", err

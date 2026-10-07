@@ -199,7 +199,7 @@ func TestUpload(t *testing.T) {
 			client, extra := setup(t, fd)
 			path := writeFile(t, tt.size)
 
-			info, err := Upload(context.Background(), client, &memStore{token: "stored-refresh"}, &memRoots{id: "root-id"}, path, "demo", tt.relPath, extra...)
+			info, err := Upload(context.Background(), client, signedIn(t, "stored-refresh"), cacheAt(t, "root-id"), path, "demo", tt.relPath, extra...)
 			if err != nil {
 				t.Fatalf("Upload: %v", err)
 			}
@@ -245,7 +245,7 @@ func TestUploadEscapesQuery(t *testing.T) {
 	client, extra := setup(t, fd)
 	path := writeFile(t, 10)
 
-	if _, err := Upload(context.Background(), client, &memStore{token: "r"}, &memRoots{id: "root-id"}, path, "it's", `a\b.txt`, extra...); err != nil {
+	if _, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), path, "it's", `a\b.txt`, extra...); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	fd.mu.Lock()
@@ -279,7 +279,7 @@ func TestUploadErrors(t *testing.T) {
 			fd := &uploadDrive{tokenBody: tt.tokenBody}
 			client, extra := setup(t, fd)
 
-			_, err := Upload(context.Background(), client, &memStore{token: tt.stored}, &memRoots{id: "root-id"}, tt.path, "demo", "x.txt", extra...)
+			_, err := Upload(context.Background(), client, signedIn(t, tt.stored), cacheAt(t, "root-id"), tt.path, "demo", "x.txt", extra...)
 
 			if err == nil {
 				t.Fatal("err = nil, want an error")
@@ -329,9 +329,9 @@ func TestStatAndFindByTags(t *testing.T) {
 			var info FileInfo
 			var err error
 			if tt.find {
-				info, err = FindByTags(context.Background(), client, &memStore{token: token}, &memRoots{id: "root-id"}, "demo", "notes.txt", extra...)
+				info, err = FindByTags(context.Background(), client, signedIn(t, token), cacheAt(t, "root-id"), "demo", "notes.txt", extra...)
 			} else {
-				info, err = Stat(context.Background(), client, &memStore{token: token}, "file-1", extra...)
+				info, err = Stat(context.Background(), client, signedIn(t, token), "file-1", extra...)
 			}
 
 			if tt.wantErr != nil {

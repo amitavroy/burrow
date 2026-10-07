@@ -5,26 +5,41 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
 )
 
-type memRoots struct {
-	id    string
-	saves int
+// staleTime marks a cache file nobody has written to since the test set it up.
+var staleTime = time.Date(2000, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// cacheAt returns a FileStore in a temp dir holding id (nothing when empty),
+// with its mtime set far in the past so wasSaved can tell if Save ran.
+func cacheAt(t *testing.T, id string) FileStore {
+	t.Helper()
+	s := FileStore{Path: filepath.Join(t.TempDir(), "state.json")}
+	if id != "" {
+		if err := s.Save(id); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(s.Path, staleTime, staleTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s
 }
 
-func (m *memRoots) Load() (string, error) {
-	if m.id == "" {
-		return "", ErrNoRoot
-	}
-	return m.id, nil
+// wasSaved reports whether Save wrote the cache since cacheAt.
+func wasSaved(s FileStore) bool {
+	st, err := os.Stat(s.Path)
+	return err == nil && !st.ModTime().Equal(staleTime)
 }
-func (m *memRoots) Save(id string) error { m.id = id; m.saves++; return nil }
 
 type fakeFolder struct {
 	id      string
@@ -151,9 +166,9 @@ func TestEnsureRoot(t *testing.T) {
 			defer srv.Close()
 
 			client := Client{ID: "id", Secret: "secret", Endpoint: &oauth2.Endpoint{TokenURL: srv.URL + "/token"}}
-			roots := &memRoots{id: tt.cached}
+			roots := cacheAt(t, tt.cached)
 
-			got, err := EnsureRoot(context.Background(), client, &memStore{token: "stored-refresh"}, roots, option.WithEndpoint(srv.URL))
+			got, err := EnsureRoot(context.Background(), client, signedIn(t, "stored-refresh"), roots, option.WithEndpoint(srv.URL))
 			if err != nil {
 				t.Fatalf("ensureRoot: %v", err)
 			}
@@ -163,15 +178,15 @@ func TestEnsureRoot(t *testing.T) {
 			if got != tt.wantID {
 				t.Errorf("id = %q, want %q", got, tt.wantID)
 			}
-			if roots.id != tt.wantID {
-				t.Errorf("cached id = %q, want %q", roots.id, tt.wantID)
+			if cached, _ := roots.Load(); cached != tt.wantID {
+				t.Errorf("cached id = %q, want %q", cached, tt.wantID)
 			}
 			if fd.lists != tt.wantLists || fd.gets != tt.wantGets || fd.creates != tt.wantCreates {
 				t.Errorf("lists/gets/creates = %d/%d/%d, want %d/%d/%d",
 					fd.lists, fd.gets, fd.creates, tt.wantLists, tt.wantGets, tt.wantCreates)
 			}
-			if roots.saves != tt.wantSaves {
-				t.Errorf("saves = %d, want %d", roots.saves, tt.wantSaves)
+			if saved := wasSaved(roots); saved != (tt.wantSaves > 0) {
+				t.Errorf("cache saved = %v, want %v", saved, tt.wantSaves > 0)
 			}
 			if tt.wantLists > 0 {
 				if fd.listSort != "createdTime" {
@@ -198,7 +213,7 @@ func TestEnsureRoot(t *testing.T) {
 
 func TestEnsureRootNotSignedIn(t *testing.T) {
 	client := Client{ID: "id", Secret: "secret"}
-	_, err := EnsureRoot(context.Background(), client, &memStore{}, &memRoots{})
+	_, err := EnsureRoot(context.Background(), client, signedIn(t, ""), cacheAt(t, ""))
 	if err == nil || !strings.Contains(err.Error(), ErrNotSignedIn.Error()) {
 		t.Fatalf("err = %v, want ErrNotSignedIn", err)
 	}

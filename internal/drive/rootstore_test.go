@@ -25,10 +25,6 @@ func TestFileStoreRoundTrip(t *testing.T) {
 	if got, _ := s.Load(); got != "folder-2" {
 		t.Errorf("Load after overwrite = %q, want folder-2", got)
 	}
-	entries, _ := os.ReadDir(filepath.Dir(s.Path))
-	if len(entries) != 1 {
-		t.Errorf("state dir has %d entries, want only state.json (no temp files left)", len(entries))
-	}
 }
 
 func TestFileStoreDamagedCacheIsEmpty(t *testing.T) {

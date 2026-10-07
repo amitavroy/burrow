@@ -15,22 +15,12 @@ const (
 // ErrNotSignedIn means no refresh token is stored.
 var ErrNotSignedIn = errors.New("not signed in")
 
-// TokenStore persists the OAuth refresh token. Only the refresh token is
-// stored; access tokens are re-derived by refreshing.
-type TokenStore interface {
-	// Load returns the stored refresh token, or ErrNotSignedIn.
-	Load() (string, error)
-	Save(refreshToken string) error
-	// Delete removes the token. Deleting a missing token is not an error.
-	Delete() error
-}
-
-// KeyringStore keeps the refresh token in the OS keychain. It is the only
-// place the token may live: never the DB, config or logs.
+// KeyringStore keeps the OAuth refresh token in the OS keychain. It is the
+// only place the token may live: never the DB, config or logs. Only the
+// refresh token is stored; access tokens are re-derived by refreshing.
 type KeyringStore struct{}
 
-var _ TokenStore = KeyringStore{}
-
+// Load returns the stored refresh token, or ErrNotSignedIn.
 func (KeyringStore) Load() (string, error) {
 	tok, err := keyring.Get(keyringService, keyringUser)
 	if errors.Is(err, keyring.ErrNotFound) {
@@ -52,6 +42,7 @@ func (KeyringStore) Save(refreshToken string) error {
 	return nil
 }
 
+// Delete removes the token. Deleting a missing token is not an error.
 func (KeyringStore) Delete() error {
 	err := keyring.Delete(keyringService, keyringUser)
 	if err != nil && !errors.Is(err, keyring.ErrNotFound) {
