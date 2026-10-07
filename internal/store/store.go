@@ -56,9 +56,9 @@ func Open(path string) (*sql.DB, error) {
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {
-	sub, err := fsSub()
+	sub, err := fs.Sub(migrations, "migrations")
 	if err != nil {
-		return err
+		return fmt.Errorf("load migrations: %w", err)
 	}
 	provider, err := goose.NewProvider(goose.DialectSQLite3, db, sub)
 	if err != nil {
@@ -68,14 +68,6 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("migrate database: %w", err)
 	}
 	return nil
-}
-
-func fsSub() (fs.FS, error) {
-	sub, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		return nil, fmt.Errorf("load migrations: %w", err)
-	}
-	return sub, nil
 }
 
 // Info describes the migrated database for `syncd db status`.
