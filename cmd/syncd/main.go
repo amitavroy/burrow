@@ -153,18 +153,17 @@ func relPathFor(file, root string) (string, error) {
 	return filepath.ToSlash(rel), nil
 }
 
-// put uploads one file into MySync, tagged with its watch ID and relative path.
-// Putting the same tags again updates the existing Drive file.
+// put uploads one file into MySync, tagged with its relative path. Putting
+// the same rel_path again updates the existing Drive file.
 func put(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("put", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	watch := fs.String("watch", "default", "watch ID tagged on the file")
 	rootDir := fs.String("root", "", "directory the file's rel_path is relative to (default: the file's basename)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: syncd put [--watch ID] [--root DIR] <file>")
+		fmt.Fprintln(stderr, "usage: syncd put [--root DIR] <file>")
 		return 2
 	}
 	file := fs.Arg(0)
@@ -182,7 +181,7 @@ func put(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	info, err := drive.Upload(ctx, client, drive.KeyringStore{}, drive.FileStore{}, file, *watch, rel)
+	info, err := drive.Upload(ctx, client, drive.KeyringStore{}, drive.FileStore{}, file, rel)
 	if err != nil {
 		return reportDriveErr(stderr, "put", err)
 	}
@@ -194,17 +193,17 @@ func put(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// stat prints what Drive holds for one file, found by Drive ID or by its tags
-// (--watch ID plus the rel_path).
+// stat prints what Drive holds for one file, found by Drive ID or, with
+// --path, by its rel_path tag.
 func stat(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("stat", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	watch := fs.String("watch", "", "look the file up by watch ID and rel_path instead of Drive ID")
+	byPath := fs.Bool("path", false, "look the file up by its rel_path instead of its Drive ID")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: syncd stat <file-id> | syncd stat --watch ID <rel_path>")
+		fmt.Fprintln(stderr, "usage: syncd stat <file-id> | syncd stat --path <rel_path>")
 		return 2
 	}
 
@@ -217,8 +216,8 @@ func stat(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	var info drive.FileInfo
-	if *watch != "" {
-		info, err = drive.FindByTags(ctx, client, drive.KeyringStore{}, drive.FileStore{}, *watch, fs.Arg(0))
+	if *byPath {
+		info, err = drive.FindByTags(ctx, client, drive.KeyringStore{}, drive.FileStore{}, fs.Arg(0))
 	} else {
 		info, err = drive.Stat(ctx, client, drive.KeyringStore{}, fs.Arg(0))
 	}
@@ -230,7 +229,6 @@ func stat(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Size:     %d\n", info.Size)
 	fmt.Fprintf(stdout, "MD5:      %s\n", info.MD5)
 	fmt.Fprintf(stdout, "Revision: %s\n", info.RevisionID)
-	fmt.Fprintf(stdout, "watch_id: %s\n", info.WatchID)
 	fmt.Fprintf(stdout, "rel_path: %s\n", info.RelPath)
 	return 0
 }

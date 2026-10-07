@@ -93,7 +93,7 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func existingFile(id string) map[string]any {
 	return map[string]any{
 		"id": id, "name": "notes.txt", "size": "42", "md5Checksum": "abc", "headRevisionId": "rev9",
-		"appProperties": map[string]string{"watch_id": "demo", "rel_path": "notes.txt"},
+		"appProperties": map[string]string{"watch_id": "default", "rel_path": "notes.txt"}, // watch_id: legacy tag from earlier versions
 	}
 }
 
@@ -199,22 +199,22 @@ func TestUpload(t *testing.T) {
 			client, extra := setup(t, fd)
 			path := writeFile(t, tt.size)
 
-			info, err := Upload(context.Background(), client, signedIn(t, "stored-refresh"), cacheAt(t, "root-id"), path, "demo", tt.relPath, extra...)
+			info, err := Upload(context.Background(), client, signedIn(t, "stored-refresh"), cacheAt(t, "root-id"), path, tt.relPath, extra...)
 			if err != nil {
 				t.Fatalf("Upload: %v", err)
 			}
 
 			fd.mu.Lock()
 			defer fd.mu.Unlock()
-			if info.ID != tt.wantID || info.WatchID != "demo" || info.RelPath != tt.relPath || info.RevisionID != "rev1" || info.WebLink == "" {
+			if info.ID != tt.wantID || info.RelPath != tt.relPath || info.RevisionID != "rev1" || info.WebLink == "" {
 				t.Errorf("info = %+v", info)
 			}
 			if fd.method != tt.wantMethod {
 				t.Errorf("method = %s, want %s", fd.method, tt.wantMethod)
 			}
 			props, _ := fd.meta["appProperties"].(map[string]any)
-			if props["watch_id"] != "demo" || props["rel_path"] != tt.relPath {
-				t.Errorf("appProperties = %v", props)
+			if props["rel_path"] != tt.relPath || len(props) != 1 {
+				t.Errorf("appProperties = %v, want only rel_path", props)
 			}
 			if tt.wantMethod == http.MethodPost {
 				if fd.meta["name"] != tt.wantName {
@@ -225,10 +225,13 @@ func TestUpload(t *testing.T) {
 					t.Errorf("parents = %v, want [root-id]", fd.meta["parents"])
 				}
 			}
-			for _, part := range []string{"key='watch_id' and value='demo'", "key='rel_path' and value='" + tt.relPath + "'", "trashed = false", "'root-id' in parents"} {
+			for _, part := range []string{"key='rel_path' and value='" + tt.relPath + "'", "trashed = false", "'root-id' in parents"} {
 				if !strings.Contains(fd.listQ, part) {
 					t.Errorf("tag query %q missing %q", fd.listQ, part)
 				}
+			}
+			if strings.Contains(fd.listQ, "watch_id") {
+				t.Errorf("tag query %q still mentions watch_id", fd.listQ)
 			}
 			if len(fd.ranges) != tt.wantChunks {
 				t.Errorf("chunks = %d (%v), want %d", len(fd.ranges), fd.ranges, tt.wantChunks)
@@ -245,12 +248,12 @@ func TestUploadEscapesQuery(t *testing.T) {
 	client, extra := setup(t, fd)
 	path := writeFile(t, 10)
 
-	if _, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), path, "it's", `a\b.txt`, extra...); err != nil {
+	if _, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), path, `it's a\b.txt`, extra...); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	fd.mu.Lock()
 	defer fd.mu.Unlock()
-	if !strings.Contains(fd.listQ, `value='it\'s'`) || !strings.Contains(fd.listQ, `value='a\\b.txt'`) {
+	if !strings.Contains(fd.listQ, `value='it\'s a\\b.txt'`) {
 		t.Errorf("query not escaped: %q", fd.listQ)
 	}
 }
@@ -279,7 +282,7 @@ func TestUploadErrors(t *testing.T) {
 			fd := &uploadDrive{tokenBody: tt.tokenBody}
 			client, extra := setup(t, fd)
 
-			_, err := Upload(context.Background(), client, signedIn(t, tt.stored), cacheAt(t, "root-id"), tt.path, "demo", "x.txt", extra...)
+			_, err := Upload(context.Background(), client, signedIn(t, tt.stored), cacheAt(t, "root-id"), tt.path, "x.txt", extra...)
 
 			if err == nil {
 				t.Fatal("err = nil, want an error")
@@ -329,7 +332,7 @@ func TestStatAndFindByTags(t *testing.T) {
 			var info FileInfo
 			var err error
 			if tt.find {
-				info, err = FindByTags(context.Background(), client, signedIn(t, token), cacheAt(t, "root-id"), "demo", "notes.txt", extra...)
+				info, err = FindByTags(context.Background(), client, signedIn(t, token), cacheAt(t, "root-id"), "notes.txt", extra...)
 			} else {
 				info, err = Stat(context.Background(), client, signedIn(t, token), "file-1", extra...)
 			}
@@ -343,7 +346,7 @@ func TestStatAndFindByTags(t *testing.T) {
 			if err != nil {
 				t.Fatalf("err = %v", err)
 			}
-			want := FileInfo{ID: "file-1", Name: "notes.txt", Size: 42, MD5: "abc", RevisionID: "rev9", WatchID: "demo", RelPath: "notes.txt"}
+			want := FileInfo{ID: "file-1", Name: "notes.txt", Size: 42, MD5: "abc", RevisionID: "rev9", RelPath: "notes.txt"}
 			if info != want {
 				t.Errorf("info = %+v, want %+v", info, want)
 			}

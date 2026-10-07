@@ -189,6 +189,7 @@ func TestPut(t *testing.T) {
 		{name: "no file is a usage error", args: []string{"put"}, wantCode: 2, wantStderr: "usage: syncd put"},
 		{name: "two files is a usage error", args: []string{"put", file, file}, wantCode: 2, wantStderr: "usage: syncd put"},
 		{name: "unknown flag", args: []string{"put", "--bogus", file}, wantCode: 2, wantStderr: "flag provided but not defined"},
+		{name: "--watch is gone", args: []string{"put", "--watch", "demo", file}, wantCode: 2, wantStderr: "flag provided but not defined: -watch"},
 		{name: "file outside root", args: []string{"put", "--root", filepath.Join(dir, "sub"), file}, wantCode: 2, wantStderr: "outside the root"},
 		{name: "not signed in gives the login hint", args: []string{"put", file}, wantCode: 1, wantStderr: "run `syncd login`"},
 		{name: "missing file exits 1", args: []string{"put", filepath.Join(dir, "nope.txt")}, signedIn: true, wantCode: 1, wantStderr: "put failed"},
@@ -232,10 +233,11 @@ func TestStat(t *testing.T) {
 	}{
 		{name: "no argument is a usage error", args: []string{"stat"}, wantCode: 2, wantStderr: "usage: syncd stat"},
 		{name: "two arguments is a usage error", args: []string{"stat", "a", "b"}, wantCode: 2, wantStderr: "usage: syncd stat"},
-		{name: "watch without rel_path is a usage error", args: []string{"stat", "--watch", "demo"}, wantCode: 2, wantStderr: "usage: syncd stat"},
+		{name: "--path without rel_path is a usage error", args: []string{"stat", "--path"}, wantCode: 2, wantStderr: "usage: syncd stat"},
+		{name: "--watch is gone", args: []string{"stat", "--watch", "demo", "notes.txt"}, wantCode: 2, wantStderr: "flag provided but not defined: -watch"},
 		{name: "unknown flag", args: []string{"stat", "--bogus", "id"}, wantCode: 2, wantStderr: "flag provided but not defined"},
 		{name: "by ID, not signed in", args: []string{"stat", "file-id"}, wantCode: 1, wantStderr: "run `syncd login`"},
-		{name: "by tags, not signed in", args: []string{"stat", "--watch", "demo", "notes.txt"}, wantCode: 1, wantStderr: "run `syncd login`"},
+		{name: "by rel_path, not signed in", args: []string{"stat", "--path", "notes.txt"}, wantCode: 1, wantStderr: "run `syncd login`"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

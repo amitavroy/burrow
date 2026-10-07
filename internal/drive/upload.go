@@ -21,9 +21,8 @@ const (
 	// uploadFields is what Drive returns for an uploaded or looked-up file.
 	uploadFields = "id,name,md5Checksum,size,headRevisionId,appProperties,webViewLink"
 
-	// Keys of the appProperties written on every upload. Files are tracked by
-	// Drive ID; these tags let the local state be rebuilt from Drive alone.
-	tagWatchID = "watch_id"
+	// Key of the appProperty written on every upload. Files are tracked by
+	// Drive ID; this tag lets the local state be rebuilt from Drive alone.
 	tagRelPath = "rel_path"
 )
 
@@ -39,17 +38,16 @@ type FileInfo struct {
 	Size       int64
 	MD5        string
 	RevisionID string
-	WatchID    string
 	RelPath    string
 	WebLink    string
 }
 
 // Upload sends the local file at path into the MySync folder, tagged with
-// watchID and relPath. If a live file with the same tags is already there its
-// content is replaced (same Drive ID), otherwise a new file is created. It
+// relPath. If a live file with the same tag is already there its content is
+// replaced (same Drive ID), otherwise a new file is created. It
 // returns ErrNotSignedIn or ErrSessionExpired like EnsureRoot. extra options
 // are for tests.
-func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, path, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, path, relPath string, extra ...option.ClientOption) (FileInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return FileInfo{}, fmt.Errorf("open %s: %w", path, err)
@@ -70,12 +68,12 @@ func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileS
 		return FileInfo{}, sessionError(err)
 	}
 
-	existing, err := findByTags(ctx, svc, rootID, watchID, relPath)
+	existing, err := findByTags(ctx, svc, rootID, relPath)
 	if err != nil {
 		return FileInfo{}, sessionError(err)
 	}
 
-	tags := map[string]string{tagWatchID: watchID, tagRelPath: relPath}
+	tags := map[string]string{tagRelPath: relPath}
 	media := googleapi.ChunkSize(uploadChunkSize)
 	var out *drv.File
 	if existing != nil {
@@ -117,11 +115,11 @@ func Stat(ctx context.Context, client Client, tokens KeyringStore, id string, ex
 	return fileInfo(f), nil
 }
 
-// FindByTags returns the live file in MySync tagged with watchID and relPath,
+// FindByTags returns the live file in MySync tagged with relPath,
 // or ErrFileNotFound. It is the same lookup Upload uses to decide between
 // create and update. Sign-in errors are as for Upload. extra options are for
 // tests.
-func FindByTags(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+func FindByTags(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, relPath string, extra ...option.ClientOption) (FileInfo, error) {
 	svc, err := serviceFromStore(ctx, client, tokens, extra...)
 	if err != nil {
 		return FileInfo{}, err
@@ -130,22 +128,23 @@ func FindByTags(ctx context.Context, client Client, tokens KeyringStore, roots F
 	if err != nil {
 		return FileInfo{}, sessionError(err)
 	}
-	f, err := findByTags(ctx, svc, rootID, watchID, relPath)
+	f, err := findByTags(ctx, svc, rootID, relPath)
 	if err != nil {
 		return FileInfo{}, sessionError(err)
 	}
 	if f == nil {
-		return FileInfo{}, fmt.Errorf("%w: watch %q, path %q", ErrFileNotFound, watchID, relPath)
+		return FileInfo{}, fmt.Errorf("%w: path %q", ErrFileNotFound, relPath)
 	}
 	return fileInfo(f), nil
 }
 
-// findByTags returns the live file in parent carrying the given tags, or nil.
-// Drive allows duplicate names, so the tags (not the name) identify the file;
-// if several match the oldest wins.
-func findByTags(ctx context.Context, svc *drv.Service, parent, watchID, relPath string) (*drv.File, error) {
-	q := fmt.Sprintf("appProperties has { key='%s' and value='%s' } and appProperties has { key='%s' and value='%s' } and trashed = false and '%s' in parents",
-		tagWatchID, escapeQuery(watchID), tagRelPath, escapeQuery(relPath), parent)
+// findByTags returns the live file in parent carrying the rel_path tag, or nil.
+// Drive allows duplicate names, so the tag (not the name) identifies the file;
+// if several match the oldest wins. Other tags, such as the watch_id that
+// earlier versions wrote, are ignored.
+func findByTags(ctx context.Context, svc *drv.Service, parent, relPath string) (*drv.File, error) {
+	q := fmt.Sprintf("appProperties has { key='%s' and value='%s' } and trashed = false and '%s' in parents",
+		tagRelPath, escapeQuery(relPath), parent)
 	f, err := oldestMatch(ctx, svc, q, uploadFields)
 	if err != nil {
 		return nil, fmt.Errorf("find %s: %w", relPath, err)
@@ -165,7 +164,6 @@ func fileInfo(f *drv.File) FileInfo {
 		Size:       f.Size,
 		MD5:        f.Md5Checksum,
 		RevisionID: f.HeadRevisionId,
-		WatchID:    f.AppProperties[tagWatchID],
 		RelPath:    f.AppProperties[tagRelPath],
 		WebLink:    f.WebViewLink,
 	}
