@@ -75,7 +75,7 @@ The app signs in as the Google account that owns the storage, using the OAuth 2.
 Each machine has one local setting, the sync root path, and Drive mirrors the folder tree under it, the way Dropbox works.
 
 - **Local:** one root per machine (`~/MySync` on Linux, `D:\MySync` on Windows). The root path lives only in local config, never in Drive.
-- **Drive:** a `MySync/` folder whose tree mirrors the local tree. A watch is a top-level subfolder, and its name is the `watch_id`.
+- **Drive:** a `MySync/` folder whose tree mirrors the local tree. A `watch_id` (a top-level subfolder per synced local folder) is deferred with the multi-folder feature below; v1 has one root and does not write it.
 - **Relative path:** every file's `rel_path` is its path under the root, with no machine-specific parts.
 - **Limitation:** files must live inside the root. Watching an existing folder in place (for example `~/Documents`) is a later feature, via a per-machine mapping of `watch_id` to local path. Symlinks are avoided because they behave inconsistently across operating systems.
 
@@ -84,7 +84,7 @@ Each machine has one local setting, the sync root path, and Drive mirrors the fo
 Each Drive file gets private `appProperties`, so the database can be rebuilt from Drive alone:
 
 ```json
-{ "watch_id": "work-docs", "rel_path": "reports/q3.pdf" }
+{ "rel_path": "reports/q3.pdf" }
 ```
 
 The folder tree already implies `rel_path`. The tags are a safety net that survives a renamed Drive folder and makes matching unambiguous. Files are always tracked by Drive file ID, never by name, because Drive allows duplicate names in one folder.
@@ -245,7 +245,7 @@ The whole engine can then be built and tested through a CLI before any UI exists
 **Open questions**
 
 - [ ] Which UI first: a minimal tray menu or a fuller settings window?
-- [ ] Should a per-machine mapping for arbitrary folders be a v1.x feature?
+- [ ] Should a per-machine mapping for arbitrary folders be a v1.x feature? (This is where `watch_id` comes back, likely as a per-watch Drive folder plus a local-path mapping.)
 - [ ] Per-device Drive roots, or restore-only second machines, until phase 2 ships?
 - [ ] Rely on rclone for the first working version, then replace it?
 

@@ -64,12 +64,12 @@ The folder ID is cached in `state.json` in the app data dir (`~/.local/share/bur
 ## Uploading a file
 
 ```
-bin/syncd put [--watch ID] [--root DIR] <file>   # uploads into MySync/, prints the file ID and link
+bin/syncd put [--root DIR] <file>                # uploads into MySync/, prints the file ID and link
 bin/syncd stat <file-id>                         # prints ID, name, size, MD5, revision and tags
-bin/syncd stat --watch ID <rel_path>             # same, found by tags instead of ID
+bin/syncd stat --path <rel_path>                 # same, found by its rel_path tag instead of ID
 ```
 
-Every upload is tagged in Drive with `watch_id` (default `default`) and `rel_path`. Without `--root`, `rel_path` is the file's name; with it, the path relative to `--root` (a file outside the root is rejected). Putting a file with the same tags again updates the existing Drive file instead of making a second one. `stat --watch` creates `MySync/` if it does not exist yet.
+Every upload is tagged in Drive with its `rel_path`. Without `--root`, `rel_path` is the file's name; with it, the path relative to `--root` (a file outside the root is rejected). Putting a file with the same `rel_path` again updates the existing Drive file instead of making a second one. `stat --path` creates `MySync/` if it does not exist yet.
 
 ## Scanning
 

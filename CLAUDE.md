@@ -20,7 +20,7 @@ A Go daemon (`cmd/syncd`) that watches one local sync root and mirrors it to Goo
 ## Invariants that span multiple files
 
 - **Drive is the source of truth; SQLite is a disposable cache.** Deleting the DB must lose nothing. It is rebuilt from Drive (via `appProperties`) and the local folder. Never sync or copy the DB, and never place it inside the sync root. It lives in the `adrg/xdg` data dir (Local, not Roaming, on Windows).
-- **Track files by Drive file ID, never by name** (Drive allows duplicate names in a folder). Every upload writes `appProperties` `{watch_id, rel_path}`. `rel_path` is relative to the root and has no machine-specific parts.
+- **Track files by Drive file ID, never by name** (Drive allows duplicate names in a folder). Every upload writes `appProperties` `{rel_path}`. `rel_path` is relative to the root and has no machine-specific parts. A `watch_id` tag is deferred until multi-folder support exists.
 - **Auth constraints:**
   - Use a user OAuth flow (loopback and PKCE), not a service account (no quota on personal Drive).
   - Scope is `drive.file` only, so the app can only see files it created. It creates and owns `MySync/` itself.
