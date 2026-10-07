@@ -19,7 +19,7 @@ type Entry struct {
 }
 
 // Scan walks root and returns its regular files sorted by RelPath, skipping
-// anything the default ignore rules match; an ignored directory is not walked
+// anything the default rules or <root>/.syncignore match; an ignored directory is not walked
 // at all. It never writes. Directories, symlinks and other non-regular files
 // are not listed.
 func Scan(root string) ([]Entry, error) {
@@ -31,7 +31,10 @@ func Scan(root string) ([]Entry, error) {
 		return nil, fmt.Errorf("scan root: %s is not a directory", root)
 	}
 
-	ignore := NewMatcher()
+	ignore, err := NewMatcher(root)
+	if err != nil {
+		return nil, err
+	}
 	var entries []Entry
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

@@ -119,3 +119,25 @@ func TestScanDefaultIgnores(t *testing.T) {
 		t.Fatalf("paths = %v, want %v", paths, want)
 	}
 }
+
+func TestScanSyncignore(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, ".syncignore"), "*.log\n!keep.log\n")
+	write(t, filepath.Join(root, "a.log"), "x")
+	write(t, filepath.Join(root, "keep.log"), "x")
+	write(t, filepath.Join(root, "d", "b.log"), "x")
+	write(t, filepath.Join(root, "d", "c.txt"), "x")
+
+	got, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, e := range got {
+		paths = append(paths, e.RelPath)
+	}
+	want := []string{"d/c.txt", "keep.log"} // .syncignore itself is not listed
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+}
