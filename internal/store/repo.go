@@ -212,6 +212,37 @@ func (r *Repo) List(ctx context.Context) ([]File, error) {
 	return files, nil
 }
 
+// GetFolder returns the Drive folder ID cached for relDir (slash form,
+// relative to the root), or ErrNotFound.
+func (r *Repo) GetFolder(ctx context.Context, relDir string) (string, error) {
+	id, err := call(ctx, r, func(db *sql.DB) (string, error) {
+		var id string
+		err := db.QueryRow(`SELECT drive_folder_id FROM folders WHERE rel_dir = ?`, relDir).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrNotFound
+		}
+		return id, err
+	})
+	if err != nil {
+		return "", fmt.Errorf("get folder %q: %w", relDir, err)
+	}
+	return id, nil
+}
+
+// PutFolder caches the Drive folder ID for relDir, replacing any earlier one.
+func (r *Repo) PutFolder(ctx context.Context, relDir, driveFolderID string) error {
+	_, err := call(ctx, r, func(db *sql.DB) (struct{}, error) {
+		_, err := db.Exec(`
+INSERT INTO folders (rel_dir, drive_folder_id) VALUES (?, ?)
+ON CONFLICT(rel_dir) DO UPDATE SET drive_folder_id = excluded.drive_folder_id`, relDir, driveFolderID)
+		return struct{}{}, err
+	})
+	if err != nil {
+		return fmt.Errorf("put folder %q: %w", relDir, err)
+	}
+	return nil
+}
+
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
 type rowScanner interface{ Scan(dest ...any) error }
 

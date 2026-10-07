@@ -361,3 +361,95 @@ func TestRepoCloseTwice(t *testing.T) {
 		t.Errorf("second Close: %v", err)
 	}
 }
+
+func TestRepoFolderRoundTrip(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+
+	if err := r.PutFolder(ctx, "a/b", "folder-1"); err != nil {
+		t.Fatalf("PutFolder: %v", err)
+	}
+	got, err := r.GetFolder(ctx, "a/b")
+	if err != nil || got != "folder-1" {
+		t.Fatalf("GetFolder = %q, %v; want folder-1", got, err)
+	}
+}
+
+func TestRepoPutFolderOverwrites(t *testing.T) {
+	r, path := openTempRepo(t)
+	ctx := context.Background()
+	for _, id := range []string{"old", "new"} {
+		if err := r.PutFolder(ctx, "a", id); err != nil {
+			t.Fatalf("PutFolder(%s): %v", id, err)
+		}
+	}
+	if got, err := r.GetFolder(ctx, "a"); err != nil || got != "new" {
+		t.Fatalf("GetFolder = %q, %v; want new", got, err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM folders`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("folders rows = %d, %v; want 1", n, err)
+	}
+}
+
+func TestRepoGetFolderMissing(t *testing.T) {
+	r, _ := openTempRepo(t)
+	if _, err := r.GetFolder(context.Background(), "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRepoFolderUseAfterClose(t *testing.T) {
+	r, _ := openTempRepo(t)
+	if err := r.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := r.PutFolder(ctx, "a", "x"); !errors.Is(err, ErrClosed) {
+		t.Errorf("PutFolder after Close: err = %v, want ErrClosed", err)
+	}
+	if _, err := r.GetFolder(ctx, "a"); !errors.Is(err, ErrClosed) {
+		t.Errorf("GetFolder after Close: err = %v, want ErrClosed", err)
+	}
+}
+
+func TestRepoConcurrentFolders(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	const n = 50
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			dir := fmt.Sprintf("dir/sub-%02d", i)
+			id := fmt.Sprintf("folder-%02d", i)
+			if err := r.PutFolder(ctx, dir, id); err != nil {
+				errs <- err
+				return
+			}
+			got, err := r.GetFolder(ctx, dir)
+			if err != nil {
+				errs <- err
+				return
+			}
+			if got != id {
+				errs <- fmt.Errorf("%s: id = %s, want %s", dir, got, id)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}

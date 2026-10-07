@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -63,8 +64,8 @@ func TestOpenIsIdempotent(t *testing.T) {
 		if err := db.QueryRow("SELECT MAX(version_id) FROM goose_db_version").Scan(&version); err != nil {
 			t.Fatalf("read version: %v", err)
 		}
-		if version != 1 {
-			t.Errorf("open #%d: version = %d, want 1", i+1, version)
+		if version != 2 {
+			t.Errorf("open #%d: version = %d, want 2", i+1, version)
 		}
 		db.Close()
 	}
@@ -92,6 +93,28 @@ func TestFilesTableColumns(t *testing.T) {
 	}
 }
 
+func TestFoldersTableColumns(t *testing.T) {
+	db, _ := openTemp(t)
+	rows, err := db.Query("SELECT name, pk FROM pragma_table_info('folders') ORDER BY cid")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var name string
+		var pk int
+		if err := rows.Scan(&name, &pk); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%s:%d", name, pk))
+	}
+	want := []string{"rel_dir:1", "drive_folder_id:0"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("folders columns (name:pk) = %v, want %v", got, want)
+	}
+}
+
 func TestFilesRelPathIsUnique(t *testing.T) {
 	db, _ := openTemp(t)
 	if _, err := db.Exec("INSERT INTO files (rel_path) VALUES ('a/b.txt')"); err != nil {
@@ -109,10 +132,10 @@ func TestStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if info.Version != 1 {
-		t.Errorf("Version = %d, want 1", info.Version)
+	if info.Version != 2 {
+		t.Errorf("Version = %d, want 2", info.Version)
 	}
-	want := []string{"files", "goose_db_version"}
+	want := []string{"files", "folders", "goose_db_version"}
 	if !reflect.DeepEqual(info.Tables, want) {
 		t.Errorf("Tables = %v, want %v", info.Tables, want)
 	}
