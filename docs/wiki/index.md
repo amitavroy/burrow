@@ -109,7 +109,7 @@ syncd login
 Rule: the refresh token lives only in the OS keychain (`go-keyring`), never in the DB, config or logs.
 
 - Only the refresh token string is stored (service `burrow`, user `google-refresh-token`). Access tokens are re-derived by refreshing.
-- `drive.TokenStore` is the interface; `drive.KeyringStore` is the keychain implementation (`internal/drive/tokenstore.go`). A missing entry is `ErrNotSignedIn`, and deleting a missing entry is not an error.
+- `drive.KeyringStore` is the keychain store (`internal/drive/tokenstore.go`); callers use it directly, with no interface in between. A missing entry is `ErrNotSignedIn`, and deleting a missing entry is not an error.
 - `syncd login` saves the token right after the code exchange, before the email lookup, so a failed `about.get` does not waste the sign-in.
 - `syncd whoami` calls `drive.Resume` (`internal/drive/resume.go`): load the token, refresh it, ask Drive for the email. The rebuilt token has an expiry in the past (`TokenFromRefresh`), because oauth2 treats a zero expiry as "never expires" and would never refresh.
 - Google answering `invalid_grant` (revoked or expired) becomes `ErrSessionExpired`, and `whoami` tells the user to run `syncd login`.
@@ -125,7 +125,7 @@ Rule: the refresh token lives only in the OS keychain (`go-keyring`), never in t
 - Cache: `{"root_folder_id": "..."}` in `state.json` in the `adrg/xdg` data dir (`burrow/state.json`; Local, not Roaming, on Windows). It is never inside the sync root. Disposable: deleting it costs one lookup. It stays a separate file for now; the State database section covers the SQLite cache.
 - The cached ID is checked with `files.get(fields=id,trashed)` before use. On 404 or `trashed: true` it falls back to find/create and rewrites the cache, so uploads never go into the trash.
 - Idempotent: a second run prints the same ID and creates nothing.
-- Code: `drive.EnsureRoot` (`internal/drive/root.go`); `drive.RootStore`, `drive.FileStore`, `ErrNoRoot` (`internal/drive/rootstore.go`). `FileStore` writes through a temp file and rename; a corrupt cache is treated as empty. The Drive service is built by `newService` in `about.go`, shared with `Email`.
+- Code: `drive.EnsureRoot` (`internal/drive/root.go`); `drive.FileStore`, `ErrNoRoot` (`internal/drive/rootstore.go`). `FileStore` writes the file in place; a corrupt or half-written cache is treated as empty, so the next run just looks the folder up again. The Drive service is built by `newService` in `about.go`, shared with `Email`.
 - Same exit-1 hints as `whoami` when not signed in or the session expired.
 
 ## Uploading a file
@@ -150,7 +150,7 @@ syncd put [--watch ID] [--root DIR] <file>
 - Everything is placed directly in `MySync/`. Per-watch subfolders come with ticket 10, and the MD5 skip and retries with tickets 12 and 16.
 - Requested fields: `id,name,md5Checksum,size,headRevisionId,appProperties,webViewLink`.
 - Same exit-1 hints as `whoami` when not signed in or the session expired. Usage errors exit 2.
-- Code: `drive.Upload`, `drive.Stat`, `drive.FindByTags`, `drive.FileInfo`, `ErrFileNotFound` (`internal/drive/upload.go`). Service setup is shared through `serviceFromStore` (`root.go`).
+- Code: `drive.Upload`, `drive.Stat`, `drive.FindByTags`, `drive.FileInfo`, `ErrFileNotFound` (`internal/drive/upload.go`). Service setup is shared through `serviceFromStore` (`root.go`), and the oldest-match list query behind `FindByTags` and the root lookup is `oldestMatch` (`upload.go`). Each operation is one exported function that takes a `drive.Client`; tests point its optional `Endpoint` at a fake OAuth server.
 
 ### Stat
 
