@@ -320,14 +320,18 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		root = filepath.Join(home, "MySync")
 	}
 
-	entries, err := burrowsync.Scan(root)
+	res, err := burrowsync.Scan(root)
 	if err != nil {
 		fmt.Fprintf(stderr, "syncd: scan failed: %v\n", err)
 		return 1
 	}
-	for _, e := range entries {
+	for _, e := range res.Entries {
 		fmt.Fprintln(stdout, e.RelPath)
 	}
+	for _, e := range res.Errors {
+		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
+	}
+	fmt.Fprintf(stderr, "%d files, %d ignored\n", len(res.Entries), res.Ignored)
 	return 0
 }
 

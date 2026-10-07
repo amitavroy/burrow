@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -338,8 +339,8 @@ func TestScan(t *testing.T) {
 		wantStdout string
 		wantStderr string
 	}{
-		{"lists files sorted", []string{"scan", "--dry-run", "--root", root}, 0, "a/c.txt\nb.txt\n", ""},
-		{"default root is ~/MySync", []string{"scan", "--dry-run"}, 0, "h.txt\n", ""},
+		{"lists files sorted", []string{"scan", "--dry-run", "--root", root}, 0, "a/c.txt\nb.txt\n", "2 files, 0 ignored"},
+		{"default root is ~/MySync", []string{"scan", "--dry-run"}, 0, "h.txt\n", "1 files, 0 ignored"},
 		{"needs --dry-run", []string{"scan", "--root", root}, 2, "", "usage: syncd scan"},
 		{"missing root", []string{"scan", "--dry-run", "--root", filepath.Join(root, "nope")}, 1, "", "scan failed"},
 		{"file as root", []string{"scan", "--dry-run", "--root", file}, 1, "", "not a directory"},
@@ -358,5 +359,48 @@ func TestScan(t *testing.T) {
 				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
 			}
 		})
+	}
+}
+
+func TestScanReportsIgnoredAndUnreadable(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"ok.txt", "x.tmp", "node_modules/i.js", "locked/s.txt"} {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	locked := filepath.Join(root, "locked")
+	canLock := runtime.GOOS != "windows" && os.Geteuid() != 0
+	if canLock {
+		if err := os.Chmod(locked, 0o000); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(locked, 0o755) })
+	}
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", "--dry-run", "--root", root}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0 (stderr %q)", code, stderr.String())
+	}
+	want := "locked/s.txt\nok.txt\n"
+	wantCount := "2 files, 2 ignored"
+	if canLock {
+		want = "ok.txt\n"
+		wantCount = "1 files, 2 ignored"
+		if !strings.Contains(stderr.String(), "skipped:") || !strings.Contains(stderr.String(), "locked") {
+			t.Errorf("stderr = %q, want a skipped line naming locked", stderr.String())
+		}
+	}
+	if stdout.String() != want {
+		t.Errorf("stdout = %q, want %q", stdout.String(), want)
+	}
+	if !strings.Contains(stderr.String(), wantCount) {
+		t.Errorf("stderr = %q, want it to contain %q", stderr.String(), wantCount)
 	}
 }

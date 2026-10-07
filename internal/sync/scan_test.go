@@ -33,10 +33,11 @@ func TestScan(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := Scan(root)
+	res, err := Scan(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := res.Entries
 
 	var paths []string
 	for _, e := range got {
@@ -65,10 +66,11 @@ func TestScanSkipsSymlinks(t *testing.T) {
 		t.Skip("symlinks not supported:", err)
 	}
 
-	got, err := Scan(root)
+	res, err := Scan(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := res.Entries
 	if len(got) != 1 || got[0].RelPath != "real.txt" {
 		t.Fatalf("got %v, want only real.txt", got)
 	}
@@ -106,10 +108,11 @@ func TestScanDefaultIgnores(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(locked, 0o755) })
 
-	got, err := Scan(root)
+	res, err := Scan(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := res.Entries
 	var paths []string
 	for _, e := range got {
 		paths = append(paths, e.RelPath)
@@ -128,10 +131,11 @@ func TestScanSyncignore(t *testing.T) {
 	write(t, filepath.Join(root, "d", "b.log"), "x")
 	write(t, filepath.Join(root, "d", "c.txt"), "x")
 
-	got, err := Scan(root)
+	res, err := Scan(root)
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := res.Entries
 	var paths []string
 	for _, e := range got {
 		paths = append(paths, e.RelPath)
@@ -139,5 +143,50 @@ func TestScanSyncignore(t *testing.T) {
 	want := []string{"d/c.txt", "keep.log"} // .syncignore itself is not listed
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("paths = %v, want %v", paths, want)
+	}
+}
+
+func TestScanCountsIgnored(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "keep.txt"), "x")
+	write(t, filepath.Join(root, "a.tmp"), "x")
+	write(t, filepath.Join(root, "node_modules", "p", "i.js"), "x")
+	write(t, filepath.Join(root, "node_modules", "p", "j.js"), "x")
+
+	res, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a.tmp and the node_modules directory; its contents are never visited.
+	if res.Ignored != 2 {
+		t.Errorf("Ignored = %d, want 2", res.Ignored)
+	}
+	if len(res.Entries) != 1 {
+		t.Errorf("entries = %v, want only keep.txt", res.Entries)
+	}
+}
+
+func TestScanUnreadableDirIsReportedAndSkipped(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs chmod 000 to make a directory unreadable")
+	}
+	root := t.TempDir()
+	write(t, filepath.Join(root, "ok.txt"), "x")
+	write(t, filepath.Join(root, "locked", "secret.txt"), "x")
+	locked := filepath.Join(root, "locked")
+	if err := os.Chmod(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+
+	res, err := Scan(root)
+	if err != nil {
+		t.Fatalf("one locked directory must not fail the scan: %v", err)
+	}
+	if len(res.Entries) != 1 || res.Entries[0].RelPath != "ok.txt" {
+		t.Errorf("entries = %v, want only ok.txt", res.Entries)
+	}
+	if len(res.Errors) != 1 {
+		t.Errorf("errors = %v, want one", res.Errors)
 	}
 }
