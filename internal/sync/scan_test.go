@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -82,5 +83,39 @@ func TestScanBadRoot(t *testing.T) {
 		if _, err := Scan(root); err == nil {
 			t.Errorf("%s: want error", name)
 		}
+	}
+}
+
+func TestScanDefaultIgnores(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs chmod 000 to make a directory unreadable")
+	}
+	root := t.TempDir()
+	write(t, filepath.Join(root, "keep.txt"), "x")
+	write(t, filepath.Join(root, "a", "keep.md"), "x")
+	write(t, filepath.Join(root, ".git", "config"), "x")
+	write(t, filepath.Join(root, "a", "node_modules", "pkg", "i.js"), "x")
+	write(t, filepath.Join(root, "x.tmp"), "x")
+	write(t, filepath.Join(root, "a", "~$draft.docx"), "x")
+
+	// A directory that cannot be read fails the walk if it is entered, so this
+	// proves an ignored directory is skipped whole rather than walked.
+	locked := filepath.Join(root, "node_modules")
+	if err := os.Mkdir(locked, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(locked, 0o755) })
+
+	got, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var paths []string
+	for _, e := range got {
+		paths = append(paths, e.RelPath)
+	}
+	want := []string{"a/keep.md", "keep.txt"}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("paths = %v, want %v", paths, want)
 	}
 }

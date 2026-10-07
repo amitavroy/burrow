@@ -18,8 +18,10 @@ type Entry struct {
 	MTime int64
 }
 
-// Scan walks root and returns its regular files sorted by RelPath. It never
-// writes. Directories, symlinks and other non-regular files are not listed.
+// Scan walks root and returns its regular files sorted by RelPath, skipping
+// anything the default ignore rules match; an ignored directory is not walked
+// at all. It never writes. Directories, symlinks and other non-regular files
+// are not listed.
 func Scan(root string) ([]Entry, error) {
 	st, err := os.Stat(root)
 	if err != nil {
@@ -29,10 +31,25 @@ func Scan(root string) ([]Entry, error) {
 		return nil, fmt.Errorf("scan root: %s is not a directory", root)
 	}
 
+	ignore := NewMatcher()
 	var entries []Entry
 	err = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if ignore.Ignored(rel, d.IsDir()) {
+			if d.IsDir() {
+				return fs.SkipDir
+			}
+			return nil
 		}
 		if !d.Type().IsRegular() {
 			return nil
@@ -41,12 +58,8 @@ func Scan(root string) ([]Entry, error) {
 		if err != nil {
 			return err
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
 		entries = append(entries, Entry{
-			RelPath: filepath.ToSlash(rel),
+			RelPath: rel,
 			Size:    info.Size(),
 			MTime:   info.ModTime().UnixNano(),
 		})
