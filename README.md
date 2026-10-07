@@ -71,6 +71,16 @@ bin/syncd stat --watch ID <rel_path>             # same, found by tags instead o
 
 Every upload is tagged in Drive with `watch_id` (default `default`) and `rel_path`. Without `--root`, `rel_path` is the file's name; with it, the path relative to `--root` (a file outside the root is rejected). Putting a file with the same tags again updates the existing Drive file instead of making a second one. `stat --watch` creates `MySync/` if it does not exist yet.
 
+## Scanning
+
+```
+bin/syncd scan --dry-run [--root DIR]   # lists the files a sync would upload; changes nothing
+```
+
+`--dry-run` is required. The root defaults to `~/MySync`. Output is one slash-form path per line on stdout (so it pipes cleanly); skipped entries and a `N files, M ignored` summary go to stderr. Symlinks and other special files are skipped, and an unreadable file or folder is reported and skipped without stopping the scan. A missing root, or a file given as the root, exits 1.
+
+Ignored by default: `.git`, `node_modules`, `*.tmp` and `~$*` (editor temp files). To add your own rules, put a `.syncignore` file in the root, in gitignore syntax (`*.log`, `build/`, `**/gen/*.go`, `!keep.log`). A rule can re-include a default such as `*.tmp`, but never `.git`, and `.syncignore` itself is never listed.
+
 ## State database
 
 ```

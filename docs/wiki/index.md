@@ -76,6 +76,14 @@ Date: 2026-10-05. Ticket: GH-6.
 - Why: goose supports embedded SQL files and a provider with no global state, so there are no migration files to ship beside the binary. This chose it over golang-migrate.
 - Consequence: each later ticket adds its own numbered migration (`file_revisions` in 13, jobs in 17, `sync_errors` in 18) instead of guessing future schemas now.
 
+### ADR-005: go-git's gitignore matcher for ignore rules
+
+Date: 2026-10-07. Ticket: GH-8.
+
+- Decision: ignore rules use `github.com/go-git/go-git/v5/plumbing/format/gitignore`.
+- Why: both candidates were run against the same 19-case table (names, globs, `**`, anchored `/foo`, `dir/`, negation, the four defaults). `sabhiram/go-gitignore` failed the `~$*` default; go-git passed every case. A hand-written matcher was rejected because gitignore semantics are easy to get subtly wrong.
+- Consequence: a few small extra modules in `go.mod` (`go-git`, `go-context`, `warnings`, and `go-billy` and `gcfg` indirectly). Only the `gitignore` package is linked, not the whole of go-git.
+
 ## Sign-in
 
 `syncd login` signs the user in with Google. Rule: user OAuth with loopback redirect and PKCE, scope `drive.file` only.
@@ -164,6 +172,29 @@ syncd put [--watch ID] [--root DIR] <file>
 - `state.json` stays for now; folding the root folder ID into the database is a later cleanup.
 - Code: `internal/store/store.go`, `path.go`, `file.go`, `repo.go`; the `db` command in `cmd/syncd/main.go`. Tests replace the `dbPath` var so they never touch the real data dir.
 
+## Scanning
+
+`syncd scan --dry-run` lists the files a sync would upload. It only reads the local folder; no Drive or database is involved, so the same function (`sync.Scan`) will feed the one-shot sync (ticket 11) and startup reconciliation (ticket 22).
+
+```
+syncd scan --dry-run [--root DIR]        (--dry-run required, else usage and exit 2)
+  -> NewMatcher(root): defaults + <root>/.syncignore
+  -> filepath.WalkDir(root):
+       ignored dir  -> fs.SkipDir (never walked), counted once
+       ignored file -> counted, skipped
+       symlink / non-regular -> skipped
+       unreadable below the root -> recorded, skipped, scan continues
+       otherwise    -> Entry{rel_path, size, mtime}
+  -> stdout: rel_path per line, sorted;  stderr: skipped lines and "N files, M ignored"
+```
+
+- Root: `--root DIR`, default `~/MySync` (home dir through the `homeDir` var, which tests replace). A missing root, or a file given as the root, exits 1; the root is never created. Only a problem with the root itself or an unreadable `.syncignore` fails the scan.
+- `Scan(root)` returns `Result{Entries, Ignored, Errors}`. `Entry` has `RelPath` (slash form, relative to the root, no `..`), `Size` and `MTime` (Unix nanoseconds, same unit as `store.File`). Directories are not listed, because Drive folders are created lazily from `rel_path` (ticket 10).
+- Rules use gitignore syntax (ADR-005). Defaults, applied first: `node_modules`, `*.tmp`, `~$*`. Then the root's `.syncignore`, if present (blank lines, `#` comments and CRLF are fine). Later rules win, so a `.syncignore` negation like `!keep.tmp` re-includes a default.
+- Two rules cannot be overridden: any path with a `.git` component is ignored, and `.syncignore` at the root is never listed or uploaded. Whether `.syncignore` should sync to a new machine belongs to ticket 28 (`config.json`).
+- Matching runs on slash-form paths on every OS. Case sensitivity follows the library; Windows case-insensitivity is not handled.
+- Code: `internal/sync/scan.go`, `ignore.go`; the `scan` command in `cmd/syncd/main.go`.
+
 ## Development
 
 How to build and check the project locally. There is no CI (see ADR-002), so run the checks before committing or merging.
@@ -183,6 +214,7 @@ syncd <command>
   root     -> finds or creates MySync/ in Drive, prints its ID and URL; caches the ID in state.json
   put      -> [--watch ID] [--root DIR] <file>: uploads into MySync/ with watch_id and rel_path tags; same tags update the same file
   stat     -> <file-id> or --watch ID <rel_path>: prints ID, name, size, MD5, revision and tags
+  scan     -> --dry-run [--root DIR]: lists the files a sync would upload, after ignore rules
   (none)   -> usage on stderr, exit 2
   unknown  -> error on stderr, exit 2
 ```

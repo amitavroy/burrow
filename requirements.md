@@ -287,7 +287,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 6 | M1 Hello Drive | Single-file upload | `syncd put <file>` with `watch_id` and `rel_path` in `appProperties` | **Checkpoint:** file shows in Drive; `syncd stat` prints its ID and tags | 5 | => Done
 | 7 | M2 One-shot sync | State DB setup | `modernc.org/sqlite`, WAL mode, `goose` migrations, path via `adrg/xdg` | `syncd db path` prints the location; tables exist | 1 | => Done
 | 8 | M2 One-shot sync | Files repository | `files` table and CRUD layer owned by one goroutine; unit tests | Tests pass under `-race` | 7 | => Done
-| 9 | M2 One-shot sync | Scan with ignore rules | `filepath.WalkDir` over the sync root, gitignore-style matcher, default ignores | `syncd scan --dry-run` lists files that would upload | 1 |
+| 9 | M2 One-shot sync | Scan with ignore rules | `filepath.WalkDir` over the sync root, gitignore-style matcher, default ignores | `syncd scan --dry-run` lists files that would upload | 1 | => Done
 | 10 | M2 One-shot sync | Folder hierarchy in Drive | Lazy folder creation with a path to folder-ID cache | A nested local tree is mirrored in Drive | 6 |
 | 11 | M2 One-shot sync | One-shot sync command | `syncd sync`: upload new files, store Drive file IDs in the DB | The whole sync root appears in Drive | 8, 9, 10 |
 | 12 | M2 One-shot sync | MD5 skip and updates | Streamed MD5; skip when it matches; `files.update` for changed files | **Checkpoint:** a second run uploads 0 files; editing one file uploads only that file | 11 |
