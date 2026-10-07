@@ -14,7 +14,7 @@ Vertical slices; each one is demoable through its tests, so review after each.
 | 2 | **Slice 2: look up and list** | Add the unique partial index on `drive_file_id` to `00001_init.sql` (pre-release, so no second migration); `GetByDriveID`, `List` (ordered by `rel_path`). Tests for both methods and the unique index. **Review point.** | [x] |
 | 3 | **Slice 3: delete** | `Delete(relPath)` returning `ErrNotFound` when absent. Tests: delete then `Get` fails, `List` shrinks, deleting twice errors. **Review point.** | [x] |
 | 4 | **Slice 4: concurrency and cancellation** | Tests under `-race`: many goroutines calling `Upsert`/`Get` together, a cancelled context returns without hanging, a panic in the owner goroutine is returned as an error and later calls still work, `Close` is safe to call twice. **Review point.** | [x] |
-| 5 | **Slice 5: docs** | Wiki "State database" section (repository, owner goroutine rule, NULL mapping, unique Drive ID index), README line only if a user-visible fact changed, `internal/store/doc.go`; mark ticket 8 `=> Done` in `requirements.md`. **Review point.** | [ ] |
+| 5 | **Slice 5: docs** | Wiki "State database" section (repository, owner goroutine rule, NULL mapping, unique Drive ID index), README line only if a user-visible fact changed, `internal/store/doc.go`; mark ticket 8 `=> Done` in `requirements.md`. **Review point.** | [x] |
 
 ## Context
 

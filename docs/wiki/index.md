@@ -155,11 +155,14 @@ syncd put [--watch ID] [--root DIR] <file>
 - Location: `burrow/burrow.db` in the `adrg/xdg` data dir (Local, not Roaming, on Windows), next to `state.json`. `store.DefaultPath()` only computes the path, because `xdg.DataFile` would create directories. It is never inside the sync root.
 - Disposable: Drive is the source of truth. Deleting the file loses only cache and the next open recreates it. It is never copied or synced.
 - Driver: `modernc.org/sqlite`, pure Go, no cgo.
-- `store.Open(path)` creates the directory (0700), applies the pragmas through the DSN (`journal_mode(WAL)`, `busy_timeout(5000)`, `foreign_keys(on)`, `synchronous(NORMAL)`), caps the pool at one connection and runs pending migrations. The caller must keep the `*sql.DB` in one owner goroutine; the wrapper arrives with the repository in ticket 8. SQL arguments are never logged.
+- `store.Open(path)` creates the directory (0700), applies the pragmas through the DSN (`journal_mode(WAL)`, `busy_timeout(5000)`, `foreign_keys(on)`, `synchronous(NORMAL)`), caps the pool at one connection and runs pending migrations. The caller must keep the `*sql.DB` in one owner goroutine; `Repo` (below) is that owner for the `files` table. SQL arguments are never logged.
 - First migration `00001_init.sql` creates `files`: `rel_path` (unique), `drive_file_id`, `size`, `mtime`, `inode`, `local_md5`, `synced_md5`, `base_md5`, `base_revision_id`. See ADR-004 for how later tables arrive. A unique partial index on `drive_file_id` ignores NULLs, so unuploaded rows do not collide.
+- Repository: `store.OpenRepo(path)` calls `Open` and starts one goroutine that owns the `*sql.DB`. `Upsert` (keyed by `rel_path`), `Get`, `GetByDriveID`, `List` (ordered by `rel_path`) and `Delete` send a request over a channel and wait for the reply, so callers never see SQL or the connection. Every method takes a `context.Context`; a cancelled context returns early, but the owner still finishes the statement it started.
+- `Repo` errors: `ErrNotFound` (missing row on `Get`, `GetByDriveID`, `Delete`) and `ErrClosed` (any call after `Close`). A panic inside a request is recovered and returned as an error, and the owner keeps serving. `Close` is safe to call twice.
+- NULL mapping: an empty string or zero `Inode` is stored as NULL and read back as the zero value, so "no Drive ID yet" is a real NULL and the unique `drive_file_id` index ignores it. `File.MTime` is Unix nanoseconds.
 - `store.Status(db)` returns the migration version and the user table names (`files` and goose's `goose_db_version`).
 - `state.json` stays for now; folding the root folder ID into the database is a later cleanup.
-- Code: `internal/store/store.go`, `path.go`; the `db` command in `cmd/syncd/main.go`. Tests replace the `dbPath` var so they never touch the real data dir.
+- Code: `internal/store/store.go`, `path.go`, `file.go`, `repo.go`; the `db` command in `cmd/syncd/main.go`. Tests replace the `dbPath` var so they never touch the real data dir.
 
 ## Development
 
