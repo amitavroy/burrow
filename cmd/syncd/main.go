@@ -36,6 +36,21 @@ func persistToken(store drive.TokenStore, tok *oauth2.Token) error {
 	return store.Save(tok.RefreshToken)
 }
 
+// reportDriveErr prints the user-facing message for a failed command that
+// talks to Drive and returns the exit code (always 1). A missing or expired
+// sign-in gets a hint to run login; anything else names the command.
+func reportDriveErr(stderr io.Writer, cmd string, err error) int {
+	switch {
+	case errors.Is(err, drive.ErrNotSignedIn):
+		fmt.Fprintln(stderr, "syncd: not signed in; run `syncd login`")
+	case errors.Is(err, drive.ErrSessionExpired):
+		fmt.Fprintln(stderr, "syncd: session expired; run `syncd login` to sign in again")
+	default:
+		fmt.Fprintf(stderr, "syncd: %s failed: %v\n", cmd, err)
+	}
+	return 1
+}
+
 // login signs in through the browser, saves the refresh token to the keychain
 // and prints the account email.
 func login(stdout, stderr io.Writer) int {
@@ -78,17 +93,8 @@ func whoami(stdout, stderr io.Writer) int {
 	defer stop()
 
 	email, err := drive.Resume(ctx, client, drive.KeyringStore{})
-	switch {
-	case errors.Is(err, drive.ErrNotSignedIn):
-		fmt.Fprintln(stderr, "syncd: not signed in; run `syncd login`")
-		return 1
-	case errors.Is(err, drive.ErrSessionExpired):
-		fmt.Fprintln(stderr, "syncd: session expired; run `syncd login` to sign in again")
-		return 1
-	case err != nil:
-		// Keychain errors arrive already labelled ("read keychain: ...").
-		fmt.Fprintf(stderr, "syncd: whoami failed: %v\n", err)
-		return 1
+	if err != nil {
+		return reportDriveErr(stderr, "whoami", err)
 	}
 	fmt.Fprintf(stdout, "Signed in as %s\n", email)
 	return 0
@@ -117,16 +123,8 @@ func root(stdout, stderr io.Writer) int {
 	defer stop()
 
 	id, err := drive.EnsureRoot(ctx, client, drive.KeyringStore{}, drive.FileStore{})
-	switch {
-	case errors.Is(err, drive.ErrNotSignedIn):
-		fmt.Fprintln(stderr, "syncd: not signed in; run `syncd login`")
-		return 1
-	case errors.Is(err, drive.ErrSessionExpired):
-		fmt.Fprintln(stderr, "syncd: session expired; run `syncd login` to sign in again")
-		return 1
-	case err != nil:
-		fmt.Fprintf(stderr, "syncd: root failed: %v\n", err)
-		return 1
+	if err != nil {
+		return reportDriveErr(stderr, "root", err)
 	}
 	fmt.Fprintf(stdout, "%s folder: %s\n", drive.RootFolderName, id)
 	fmt.Fprintf(stdout, "https://drive.google.com/drive/folders/%s\n", id)
@@ -185,16 +183,8 @@ func put(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	info, err := drive.Upload(ctx, client, drive.KeyringStore{}, drive.FileStore{}, file, *watch, rel)
-	switch {
-	case errors.Is(err, drive.ErrNotSignedIn):
-		fmt.Fprintln(stderr, "syncd: not signed in; run `syncd login`")
-		return 1
-	case errors.Is(err, drive.ErrSessionExpired):
-		fmt.Fprintln(stderr, "syncd: session expired; run `syncd login` to sign in again")
-		return 1
-	case err != nil:
-		fmt.Fprintf(stderr, "syncd: put failed: %v\n", err)
-		return 1
+	if err != nil {
+		return reportDriveErr(stderr, "put", err)
 	}
 	fmt.Fprintf(stdout, "Uploaded %s\n", info.RelPath)
 	fmt.Fprintf(stdout, "File ID: %s\n", info.ID)
@@ -232,16 +222,8 @@ func stat(args []string, stdout, stderr io.Writer) int {
 	} else {
 		info, err = drive.Stat(ctx, client, drive.KeyringStore{}, fs.Arg(0))
 	}
-	switch {
-	case errors.Is(err, drive.ErrNotSignedIn):
-		fmt.Fprintln(stderr, "syncd: not signed in; run `syncd login`")
-		return 1
-	case errors.Is(err, drive.ErrSessionExpired):
-		fmt.Fprintln(stderr, "syncd: session expired; run `syncd login` to sign in again")
-		return 1
-	case err != nil:
-		fmt.Fprintf(stderr, "syncd: stat failed: %v\n", err)
-		return 1
+	if err != nil {
+		return reportDriveErr(stderr, "stat", err)
 	}
 	fmt.Fprintf(stdout, "ID:       %s\n", info.ID)
 	fmt.Fprintf(stdout, "Name:     %s\n", info.Name)
