@@ -35,10 +35,14 @@ type LoginOptions struct {
 
 // OAuthConfig builds the oauth2 config for the shipped client.
 func (c Client) OAuthConfig(redirectURL string) *oauth2.Config {
+	endpoint := google.Endpoint
+	if c.Endpoint != nil {
+		endpoint = *c.Endpoint
+	}
 	return &oauth2.Config{
 		ClientID:     c.ID,
 		ClientSecret: c.Secret,
-		Endpoint:     google.Endpoint,
+		Endpoint:     endpoint,
 		RedirectURL:  redirectURL,
 		Scopes:       []string{ScopeDriveFile},
 	}

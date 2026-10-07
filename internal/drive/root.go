@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 
-	"golang.org/x/oauth2"
 	drv "google.golang.org/api/drive/v3"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -28,11 +27,7 @@ const (
 // folder is looked up (or created) and the cache rewritten. extra options are
 // for tests.
 func EnsureRoot(ctx context.Context, client Client, tokens TokenStore, roots RootStore, extra ...option.ClientOption) (string, error) {
-	return ensureRoot(ctx, client.OAuthConfig(""), tokens, roots, extra...)
-}
-
-func ensureRoot(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, roots RootStore, extra ...option.ClientOption) (string, error) {
-	svc, err := serviceFromStore(ctx, cfg, tokens, extra...)
+	svc, err := serviceFromStore(ctx, client, tokens, extra...)
 	if err != nil {
 		return "", err
 	}
@@ -41,12 +36,12 @@ func ensureRoot(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, root
 
 // serviceFromStore builds a Drive service from the stored refresh token. It
 // returns ErrNotSignedIn when nothing is stored.
-func serviceFromStore(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, extra ...option.ClientOption) (*drv.Service, error) {
+func serviceFromStore(ctx context.Context, client Client, tokens TokenStore, extra ...option.ClientOption) (*drv.Service, error) {
 	rt, err := tokens.Load()
 	if err != nil {
 		return nil, err
 	}
-	return newService(ctx, cfg, TokenFromRefresh(rt), extra...)
+	return newService(ctx, client, TokenFromRefresh(rt), extra...)
 }
 
 // ensureRootWith is ensureRoot on an already-built service.
@@ -93,17 +88,12 @@ func rootUsable(ctx context.Context, svc *drv.Service, id string) (bool, error) 
 func findOrCreateRoot(ctx context.Context, svc *drv.Service) (string, error) {
 	q := fmt.Sprintf("name = '%s' and mimeType = '%s' and 'root' in parents and trashed = false",
 		RootFolderName, folderMimeType)
-	list, err := svc.Files.List().
-		Q(q).
-		OrderBy("createdTime").
-		PageSize(1).
-		Fields("files(id)").
-		Context(ctx).Do()
+	found, err := oldestMatch(ctx, svc, q, "id")
 	if err != nil {
 		return "", fmt.Errorf("find %s folder: %w", RootFolderName, err)
 	}
-	if len(list.Files) > 0 {
-		return list.Files[0].Id, nil
+	if found != nil {
+		return found.Id, nil
 	}
 
 	folder, err := svc.Files.Create(&drv.File{

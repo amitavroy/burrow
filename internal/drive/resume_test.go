@@ -84,10 +84,9 @@ func TestResume(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			cfg := Client{ID: "id", Secret: "secret"}.OAuthConfig("")
-			cfg.Endpoint = oauth2.Endpoint{TokenURL: srv.URL + "/token"}
+			client := Client{ID: "id", Secret: "secret", Endpoint: &oauth2.Endpoint{TokenURL: srv.URL + "/token"}}
 
-			got, err := resume(context.Background(), cfg, &memStore{token: tt.stored}, option.WithEndpoint(srv.URL))
+			got, err := Resume(context.Background(), client, &memStore{token: tt.stored}, option.WithEndpoint(srv.URL))
 
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {

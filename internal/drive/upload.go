@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"golang.org/x/oauth2"
 	drv "google.golang.org/api/drive/v3"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -51,10 +50,6 @@ type FileInfo struct {
 // returns ErrNotSignedIn or ErrSessionExpired like EnsureRoot. extra options
 // are for tests.
 func Upload(ctx context.Context, client Client, tokens TokenStore, roots RootStore, path, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
-	return uploadFile(ctx, client.OAuthConfig(""), tokens, roots, path, watchID, relPath, extra...)
-}
-
-func uploadFile(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, roots RootStore, path, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		return FileInfo{}, fmt.Errorf("open %s: %w", path, err)
@@ -66,7 +61,7 @@ func uploadFile(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, root
 		return FileInfo{}, fmt.Errorf("%s is a directory", path)
 	}
 
-	svc, err := serviceFromStore(ctx, cfg, tokens, extra...)
+	svc, err := serviceFromStore(ctx, client, tokens, extra...)
 	if err != nil {
 		return FileInfo{}, err
 	}
@@ -107,11 +102,7 @@ func uploadFile(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, root
 // ErrFileNotFound. Sign-in errors are as for Upload. extra options are for
 // tests.
 func Stat(ctx context.Context, client Client, tokens TokenStore, id string, extra ...option.ClientOption) (FileInfo, error) {
-	return stat(ctx, client.OAuthConfig(""), tokens, id, extra...)
-}
-
-func stat(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, id string, extra ...option.ClientOption) (FileInfo, error) {
-	svc, err := serviceFromStore(ctx, cfg, tokens, extra...)
+	svc, err := serviceFromStore(ctx, client, tokens, extra...)
 	if err != nil {
 		return FileInfo{}, err
 	}
@@ -131,11 +122,7 @@ func stat(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, id string,
 // create and update. Sign-in errors are as for Upload. extra options are for
 // tests.
 func FindByTags(ctx context.Context, client Client, tokens TokenStore, roots RootStore, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
-	return findFileByTags(ctx, client.OAuthConfig(""), tokens, roots, watchID, relPath, extra...)
-}
-
-func findFileByTags(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, roots RootStore, watchID, relPath string, extra ...option.ClientOption) (FileInfo, error) {
-	svc, err := serviceFromStore(ctx, cfg, tokens, extra...)
+	svc, err := serviceFromStore(ctx, client, tokens, extra...)
 	if err != nil {
 		return FileInfo{}, err
 	}
@@ -159,19 +146,11 @@ func findFileByTags(ctx context.Context, cfg *oauth2.Config, tokens TokenStore, 
 func findByTags(ctx context.Context, svc *drv.Service, parent, watchID, relPath string) (*drv.File, error) {
 	q := fmt.Sprintf("appProperties has { key='%s' and value='%s' } and appProperties has { key='%s' and value='%s' } and trashed = false and '%s' in parents",
 		tagWatchID, escapeQuery(watchID), tagRelPath, escapeQuery(relPath), parent)
-	list, err := svc.Files.List().
-		Q(q).
-		OrderBy("createdTime").
-		PageSize(1).
-		Fields("files(" + uploadFields + ")").
-		Context(ctx).Do()
+	f, err := oldestMatch(ctx, svc, q, uploadFields)
 	if err != nil {
 		return nil, fmt.Errorf("find %s: %w", relPath, err)
 	}
-	if len(list.Files) == 0 {
-		return nil, nil
-	}
-	return list.Files[0], nil
+	return f, nil
 }
 
 // escapeQuery escapes a value for use inside a single-quoted Drive query string.
@@ -190,4 +169,21 @@ func fileInfo(f *drv.File) FileInfo {
 		RelPath:    f.AppProperties[tagRelPath],
 		WebLink:    f.WebViewLink,
 	}
+}
+
+// oldestMatch returns the oldest live file matching the Drive query q, with
+// only the given fields, or nil when there is none. Drive allows duplicate
+// names, so when several match the oldest wins: the choice is stable and
+// nothing is deleted or merged.
+func oldestMatch(ctx context.Context, svc *drv.Service, q, fields string) (*drv.File, error) {
+	list, err := svc.Files.List().
+		Q(q).
+		OrderBy("createdTime").
+		PageSize(1).
+		Fields(googleapi.Field("files(" + fields + ")")).
+		Context(ctx).Do()
+	if err != nil || len(list.Files) == 0 {
+		return nil, err
+	}
+	return list.Files[0], nil
 }

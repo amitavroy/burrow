@@ -29,15 +29,11 @@ func TokenFromRefresh(refreshToken string) *oauth2.Token {
 // the account email. It returns ErrNotSignedIn when nothing is stored and
 // ErrSessionExpired when Google rejects the token.
 func Resume(ctx context.Context, client Client, store TokenStore, extra ...option.ClientOption) (string, error) {
-	return resume(ctx, client.OAuthConfig(""), store, extra...)
-}
-
-func resume(ctx context.Context, cfg *oauth2.Config, store TokenStore, extra ...option.ClientOption) (string, error) {
 	rt, err := store.Load()
 	if err != nil {
 		return "", err
 	}
-	addr, err := email(ctx, cfg, TokenFromRefresh(rt), extra...)
+	addr, err := Email(ctx, client, TokenFromRefresh(rt), extra...)
 	if err != nil {
 		return "", sessionError(err)
 	}

@@ -3,6 +3,8 @@ package drive
 import (
 	"fmt"
 	"os"
+
+	"golang.org/x/oauth2"
 )
 
 // ScopeDriveFile is the only scope the app requests.
@@ -12,6 +14,8 @@ const ScopeDriveFile = "https://www.googleapis.com/auth/drive.file"
 type Client struct {
 	ID     string
 	Secret string
+	// Endpoint overrides Google's OAuth endpoint (tests). Nil means Google.
+	Endpoint *oauth2.Endpoint
 }
 
 // LoadClient reads the OAuth client credentials from the environment.

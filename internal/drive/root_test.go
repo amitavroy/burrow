@@ -150,11 +150,10 @@ func TestEnsureRoot(t *testing.T) {
 			srv := httptest.NewServer(fd)
 			defer srv.Close()
 
-			cfg := Client{ID: "id", Secret: "secret"}.OAuthConfig("")
-			cfg.Endpoint = oauth2.Endpoint{TokenURL: srv.URL + "/token"}
+			client := Client{ID: "id", Secret: "secret", Endpoint: &oauth2.Endpoint{TokenURL: srv.URL + "/token"}}
 			roots := &memRoots{id: tt.cached}
 
-			got, err := ensureRoot(context.Background(), cfg, &memStore{token: "stored-refresh"}, roots, option.WithEndpoint(srv.URL))
+			got, err := EnsureRoot(context.Background(), client, &memStore{token: "stored-refresh"}, roots, option.WithEndpoint(srv.URL))
 			if err != nil {
 				t.Fatalf("ensureRoot: %v", err)
 			}
@@ -198,8 +197,8 @@ func TestEnsureRoot(t *testing.T) {
 }
 
 func TestEnsureRootNotSignedIn(t *testing.T) {
-	cfg := Client{ID: "id", Secret: "secret"}.OAuthConfig("")
-	_, err := ensureRoot(context.Background(), cfg, &memStore{}, &memRoots{})
+	client := Client{ID: "id", Secret: "secret"}
+	_, err := EnsureRoot(context.Background(), client, &memStore{}, &memRoots{})
 	if err == nil || !strings.Contains(err.Error(), ErrNotSignedIn.Error()) {
 		t.Fatalf("err = %v, want ErrNotSignedIn", err)
 	}

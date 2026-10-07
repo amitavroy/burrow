@@ -168,14 +168,13 @@ func writeFile(t *testing.T, size int) string {
 	return p
 }
 
-func setup(t *testing.T, fd *uploadDrive) (*oauth2.Config, []option.ClientOption) {
+func setup(t *testing.T, fd *uploadDrive) (Client, []option.ClientOption) {
 	t.Helper()
 	srv := httptest.NewServer(fd)
 	t.Cleanup(srv.Close)
 	fd.url = srv.URL
-	cfg := Client{ID: "id", Secret: "secret"}.OAuthConfig("")
-	cfg.Endpoint = oauth2.Endpoint{TokenURL: srv.URL + "/token"}
-	return cfg, []option.ClientOption{option.WithEndpoint(srv.URL)}
+	client := Client{ID: "id", Secret: "secret", Endpoint: &oauth2.Endpoint{TokenURL: srv.URL + "/token"}}
+	return client, []option.ClientOption{option.WithEndpoint(srv.URL)}
 }
 
 func TestUpload(t *testing.T) {
@@ -197,12 +196,12 @@ func TestUpload(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fd := &uploadDrive{existingID: tt.existingID}
-			cfg, extra := setup(t, fd)
+			client, extra := setup(t, fd)
 			path := writeFile(t, tt.size)
 
-			info, err := uploadFile(context.Background(), cfg, &memStore{token: "stored-refresh"}, &memRoots{id: "root-id"}, path, "demo", tt.relPath, extra...)
+			info, err := Upload(context.Background(), client, &memStore{token: "stored-refresh"}, &memRoots{id: "root-id"}, path, "demo", tt.relPath, extra...)
 			if err != nil {
-				t.Fatalf("uploadFile: %v", err)
+				t.Fatalf("Upload: %v", err)
 			}
 
 			fd.mu.Lock()
@@ -243,11 +242,11 @@ func TestUpload(t *testing.T) {
 
 func TestUploadEscapesQuery(t *testing.T) {
 	fd := &uploadDrive{}
-	cfg, extra := setup(t, fd)
+	client, extra := setup(t, fd)
 	path := writeFile(t, 10)
 
-	if _, err := uploadFile(context.Background(), cfg, &memStore{token: "r"}, &memRoots{id: "root-id"}, path, "it's", `a\b.txt`, extra...); err != nil {
-		t.Fatalf("uploadFile: %v", err)
+	if _, err := Upload(context.Background(), client, &memStore{token: "r"}, &memRoots{id: "root-id"}, path, "it's", `a\b.txt`, extra...); err != nil {
+		t.Fatalf("Upload: %v", err)
 	}
 	fd.mu.Lock()
 	defer fd.mu.Unlock()
@@ -278,9 +277,9 @@ func TestUploadErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fd := &uploadDrive{tokenBody: tt.tokenBody}
-			cfg, extra := setup(t, fd)
+			client, extra := setup(t, fd)
 
-			_, err := uploadFile(context.Background(), cfg, &memStore{token: tt.stored}, &memRoots{id: "root-id"}, tt.path, "demo", "x.txt", extra...)
+			_, err := Upload(context.Background(), client, &memStore{token: tt.stored}, &memRoots{id: "root-id"}, tt.path, "demo", "x.txt", extra...)
 
 			if err == nil {
 				t.Fatal("err = nil, want an error")
@@ -321,7 +320,7 @@ func TestStatAndFindByTags(t *testing.T) {
 					fd.existingID = "other"
 				}
 			}
-			cfg, extra := setup(t, fd)
+			client, extra := setup(t, fd)
 			token := "stored-refresh"
 			if tt.stored == "-" {
 				token = ""
@@ -330,9 +329,9 @@ func TestStatAndFindByTags(t *testing.T) {
 			var info FileInfo
 			var err error
 			if tt.find {
-				info, err = findFileByTags(context.Background(), cfg, &memStore{token: token}, &memRoots{id: "root-id"}, "demo", "notes.txt", extra...)
+				info, err = FindByTags(context.Background(), client, &memStore{token: token}, &memRoots{id: "root-id"}, "demo", "notes.txt", extra...)
 			} else {
-				info, err = stat(context.Background(), cfg, &memStore{token: token}, "file-1", extra...)
+				info, err = Stat(context.Background(), client, &memStore{token: token}, "file-1", extra...)
 			}
 
 			if tt.wantErr != nil {
