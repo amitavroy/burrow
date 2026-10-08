@@ -436,3 +436,66 @@ func TestPutWithoutStateDB(t *testing.T) {
 		t.Errorf("code = %d, stderr = %q", code, stderr.String())
 	}
 }
+
+func TestSync(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"a.txt", "d/b.txt", "skip.tmp"} {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	file := filepath.Join(root, "a.txt")
+	tests := []struct {
+		name       string
+		args       []string
+		wantCode   int
+		wantStderr string
+	}{
+		{name: "extra argument is a usage error", args: []string{"sync", "x"}, wantCode: 2, wantStderr: "usage: syncd sync"},
+		{name: "unknown flag", args: []string{"sync", "--bogus"}, wantCode: 2, wantStderr: "flag provided but not defined"},
+		{name: "missing root exits 1", args: []string{"sync", "--root", filepath.Join(root, "nope")}, wantCode: 1, wantStderr: "sync failed"},
+		{name: "a file as the root exits 1", args: []string{"sync", "--root", file}, wantCode: 1, wantStderr: "not a directory"},
+		{name: "signed out gives the login hint", args: []string{"sync", "--root", root}, wantCode: 1, wantStderr: "run `syncd login`"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyring.MockInit()
+			t.Setenv("BURROW_GOOGLE_CLIENT_ID", "id")
+			t.Setenv("BURROW_GOOGLE_CLIENT_SECRET", "secret")
+			var stdout, stderr bytes.Buffer
+
+			code := run(tt.args, &stdout, &stderr)
+
+			if code != tt.wantCode {
+				t.Errorf("exit code = %d, want %d (stderr %q)", code, tt.wantCode, stderr.String())
+			}
+			if !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("stderr = %q, want it to contain %q", stderr.String(), tt.wantStderr)
+			}
+			if strings.Contains(stdout.String(), "uploaded") {
+				t.Errorf("stdout = %q, nothing should have uploaded", stdout.String())
+			}
+		})
+	}
+}
+
+func TestSyncDefaultRootIsMySync(t *testing.T) {
+	home := t.TempDir() // no MySync inside
+	old := homeDir
+	homeDir = func() (string, error) { return home, nil }
+	t.Cleanup(func() { homeDir = old })
+	keyring.MockInit()
+	t.Setenv("BURROW_GOOGLE_CLIENT_ID", "id")
+	t.Setenv("BURROW_GOOGLE_CLIENT_SECRET", "secret")
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"sync"}, &stdout, &stderr)
+
+	if code != 1 || !strings.Contains(stderr.String(), "MySync") {
+		t.Errorf("code = %d, stderr = %q; want exit 1 naming the default root", code, stderr.String())
+	}
+}

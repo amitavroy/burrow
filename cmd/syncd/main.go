@@ -324,6 +324,61 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// syncCmd uploads every file under the sync root to Drive, one at a time.
+// Per-file failures are reported and make the exit code 1; a lost sign-in or
+// Ctrl+C stops the run.
+func syncCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	rootDir := fs.String("root", "", "sync root to upload (default ~/MySync)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: syncd sync [--root DIR]")
+		return 2
+	}
+	root := *rootDir
+	if root == "" {
+		home, err := homeDir()
+		if err != nil {
+			fmt.Fprintf(stderr, "syncd: sync failed: %v\n", err)
+			return 1
+		}
+		root = filepath.Join(home, "MySync")
+	}
+	client, err := drive.LoadClient()
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, nil)
+	sum, err := burrowsync.Sync(ctx, root, uploader.Upload, func(e burrowsync.Event) {
+		if e.Err != nil {
+			fmt.Fprintf(stderr, "failed %s: %v\n", e.RelPath, e.Err)
+			return
+		}
+		fmt.Fprintf(stdout, "uploaded %s\n", e.RelPath)
+	})
+	for _, e := range sum.Unreadable {
+		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
+	}
+	fmt.Fprintf(stderr, "%d uploaded, %d failed, %d ignored\n", sum.Uploaded, sum.Failed, sum.Ignored)
+	switch {
+	case errors.Is(err, context.Canceled):
+		fmt.Fprintln(stderr, "syncd: sync interrupted")
+		return 1
+	case err != nil:
+		return reportDriveErr(stderr, "sync", err)
+	case sum.Failed > 0:
+		return 1
+	}
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -349,6 +404,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return db(args[1:], stdout, stderr)
 	case "scan":
 		return scan(args[1:], stdout, stderr)
+	case "sync":
+		return syncCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2
