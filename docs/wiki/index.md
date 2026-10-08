@@ -130,32 +130,44 @@ Rule: the refresh token lives only in the OS keychain (`go-keyring`), never in t
 
 ## Uploading a file
 
-`syncd put` uploads one local file into `MySync/`. Rule: files are tracked by Drive file ID, and every upload carries the `appProperties` tag `rel_path`, because Drive allows duplicate names.
+`syncd put` uploads one local file into `MySync/`, in the folder that mirrors its `rel_path`. Rule: files are tracked by Drive file ID, and every upload carries the `appProperties` tag `rel_path`, because Drive allows duplicate names.
 
 ```
 syncd put [--root DIR] <file>
   -> rel_path = file's basename, or its slash-form path relative to --root
      (outside --root is rejected, exit 2)
+  -> rel_path validated: not empty, no leading "/", no "", "." or ".." component (else error, no Drive call)
   -> EnsureRoot -> MySync folder ID
-  -> files.list: appProperties rel_path, trashed = false, parent = MySync
-       match    -> files.update (content + tags), same ID
-       no match -> files.create (parent = MySync, tags)
+  -> files.list: appProperties rel_path, not a folder, trashed = false (any parent)
+       match    -> files.update (content + tags), same ID, no folder work
+       no match -> ensureDir(dir of rel_path) -> files.create (parent = that folder, tags)
   -> print file ID and web link
+
+ensureDir(relDir)                  (relDir "." is MySync itself)
+  cached + usable      -> cached ID          (files.get id,trashed)
+  otherwise            -> parent := ensureDir(parent of relDir)
+                          id := oldest folder with this name under parent, or create it
+                          cache relDir -> id
 ```
+
+Layout: `rel_path` `a/b/c.txt` lands in `MySync/a/b/` with the name `c.txt`. Directories sit directly under `MySync/`; there is no per-watch folder.
 
 - `rel_path` never has `..`, a leading `/` or machine-specific parts.
 - If several files carry the same `rel_path`, the oldest wins.
 - There is no `watch_id`: v1 has one sync root, so a file is identified by `rel_path` alone. Files uploaded by earlier versions also carry `watch_id: default`; the lookup ignores it, so they are still found and updated. A `watch_id` returns only with multi-folder support (requirements section 12), most likely as a per-watch Drive folder plus a local-path mapping.
-- Tag values are escaped (`\` and `'`) in the query.
+- Tag values and folder names are escaped (`\` and `'`) in queries.
+- File lookup does not depend on the parent folder, so a file is found wherever it sits (this also keeps later renames and moves working).
+- Folder cache: `syncd put` opens the state database and keeps `rel_dir -> Drive folder ID` in its `folders` table (see State database). A cached ID is trusted only after `files.get` shows it exists and is not trashed; only the deepest folder is checked, because trashing a folder trashes its contents. A stale entry heals itself by looking the folder up again. The cache is best effort: if the database cannot be opened, `put` prints a warning and works without it; cache read and write errors never fail an upload. With no cache, or after deleting `burrow.db`, existing folders are found again, not duplicated.
+- Two concurrent uploads could create the same folder twice; duplicates are tolerated (oldest wins). Any single-flight guard belongs to ticket 11.
 - Files that fit in one 8 MB chunk go as one multipart request; larger ones use a resumable upload in 8 MB chunks. The file is streamed from disk, never read whole.
-- Everything is placed directly in `MySync/`. Nested folders come with ticket 10, and the MD5 skip and retries with tickets 12 and 16.
+- Folders are found by name, parent and mimeType (`trashed = false`), and the oldest wins if Drive holds duplicates. They carry no `appProperties`, because the tree already implies the path. Names are escaped like tag values. Folder rename and delete come with ticket 27, and the MD5 skip and retries with tickets 12 and 16.
 - Requested fields: `id,name,md5Checksum,size,headRevisionId,appProperties,webViewLink`.
 - Same exit-1 hints as `whoami` when not signed in or the session expired. Usage errors exit 2.
-- Code: `drive.Upload`, `drive.Stat`, `drive.FindByTags`, `drive.FileInfo`, `ErrFileNotFound` (`internal/drive/upload.go`). Service setup is shared through `serviceFromStore` (`root.go`), and the oldest-match list query behind `FindByTags` and the root lookup is `oldestMatch` (`upload.go`). Each operation is one exported function that takes a `drive.Client`; tests point its optional `Endpoint` at a fake OAuth server.
+- Code: `drive.Upload`, `drive.Stat`, `drive.FindByTags`, `drive.FileInfo`, `ErrFileNotFound`, `ensureDir` (`internal/drive/upload.go`); the cached-folder check is `folderUsable` (`root.go`). Service setup is shared through `serviceFromStore` (`root.go`), and the oldest-match list query behind `FindByTags` and the root lookup is `oldestMatch` (`upload.go`). Each operation is one exported function that takes a `drive.Client`; tests point its optional `Endpoint` at a fake OAuth server.
 
 ### Stat
 
-`syncd stat <file-id>` uses `files.get`. `syncd stat --path <rel_path>` uses the same tag query as `put` (so it creates `MySync/` if missing). Both print ID, name, size, MD5, revision and `rel_path`. A file this app cannot see is reported as not found, because `drive.file` returns 404 for it.
+`syncd stat <file-id>` uses `files.get`. `syncd stat --path <rel_path>` uses the same tag query as `put` and creates nothing in Drive. Both print ID, name, size, MD5, revision and `rel_path`. A file this app cannot see is reported as not found, because `drive.file` returns 404 for it.
 
 ## State database
 
@@ -166,12 +178,13 @@ syncd put [--root DIR] <file>
 - Driver: `modernc.org/sqlite`, pure Go, no cgo.
 - `store.Open(path)` creates the directory (0700), applies the pragmas through the DSN (`journal_mode(WAL)`, `busy_timeout(5000)`, `foreign_keys(on)`, `synchronous(NORMAL)`), caps the pool at one connection and runs pending migrations. The caller must keep the `*sql.DB` in one owner goroutine; `Repo` (below) is that owner for the `files` table. SQL arguments are never logged.
 - First migration `00001_init.sql` creates `files`: `rel_path` (unique), `drive_file_id`, `size`, `mtime`, `inode`, `local_md5`, `synced_md5`, `base_md5`, `base_revision_id`. See ADR-004 for how later tables arrive. A unique partial index on `drive_file_id` ignores NULLs, so unuploaded rows do not collide.
+- Second migration `00002_folders.sql` creates `folders(rel_dir PRIMARY KEY, drive_folder_id)`: the folder-ID cache for nested uploads. `rel_dir` is slash-form and relative to the root, like `files.rel_path`. `Repo.GetFolder` returns `ErrNotFound` when absent, and `Repo.PutFolder` is an upsert. Like everything here, it is disposable cache.
 - Repository: `store.OpenRepo(path)` calls `Open` and starts one goroutine that owns the `*sql.DB`. `Upsert` (keyed by `rel_path`), `Get`, `GetByDriveID`, `List` (ordered by `rel_path`) and `Delete` send a request over a channel and wait for the reply, so callers never see SQL or the connection. Every method takes a `context.Context`; a cancelled context returns early, but the owner still finishes the statement it started.
 - `Repo` errors: `ErrNotFound` (missing row on `Get`, `GetByDriveID`, `Delete`) and `ErrClosed` (any call after `Close`). A panic inside a request is recovered and returned as an error, and the owner keeps serving. `Close` is safe to call twice.
 - NULL mapping: an empty string or zero `Inode` is stored as NULL and read back as the zero value, so "no Drive ID yet" is a real NULL and the unique `drive_file_id` index ignores it. `File.MTime` is Unix nanoseconds.
-- `store.Status(db)` returns the migration version and the user table names (`files` and goose's `goose_db_version`).
+- `store.Status(db)` returns the migration version and the user table names (`files`, `folders` and goose's `goose_db_version`).
 - `state.json` stays for now; folding the root folder ID into the database is a later cleanup.
-- Code: `internal/store/store.go`, `path.go`, `file.go`, `repo.go`; the `db` command in `cmd/syncd/main.go`. Tests replace the `dbPath` var so they never touch the real data dir.
+- Code: `internal/store/store.go`, `path.go`, `file.go`, `repo.go` (including the folder cache methods); the `db` command in `cmd/syncd/main.go`. Tests replace the `dbPath` var so they never touch the real data dir.
 
 ## Scanning
 
