@@ -48,7 +48,7 @@ func serviceFromStore(ctx context.Context, client Client, tokens KeyringStore, e
 func ensureRootWith(ctx context.Context, svc *drv.Service, roots FileStore) (string, error) {
 	// The cache is disposable, so an unreadable one is the same as an empty one.
 	if cached, err := roots.Load(); err == nil {
-		ok, err := rootUsable(ctx, svc, cached)
+		ok, err := folderUsable(ctx, svc, cached)
 		if err != nil {
 			return "", sessionError(err)
 		}
@@ -67,17 +67,19 @@ func ensureRootWith(ctx context.Context, svc *drv.Service, roots FileStore) (str
 	return id, nil
 }
 
-// rootUsable reports whether the cached folder still exists and is not
+// folderUsable reports whether a cached folder ID still exists and is not
 // trashed. Gone (404, which drive.file also returns for files it cannot see)
 // and trashed both mean "look it up again"; any other failure is an error.
-func rootUsable(ctx context.Context, svc *drv.Service, id string) (bool, error) {
+// Trashing a folder trashes everything inside it, so checking the deepest
+// cached folder is enough.
+func folderUsable(ctx context.Context, svc *drv.Service, id string) (bool, error) {
 	f, err := svc.Files.Get(id).Fields("id,trashed").Context(ctx).Do()
 	var gerr *googleapi.Error
 	if errors.As(err, &gerr) && gerr.Code == http.StatusNotFound {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("check cached %s folder: %w", RootFolderName, err)
+		return false, fmt.Errorf("check cached folder: %w", err)
 	}
 	return !f.Trashed, nil
 }

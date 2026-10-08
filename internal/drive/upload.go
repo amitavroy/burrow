@@ -9,6 +9,7 @@ import (
 	"path"
 	"strings"
 
+	"github.com/amitavroy/burrow/internal/store"
 	drv "google.golang.org/api/drive/v3"
 	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
@@ -46,11 +47,12 @@ type FileInfo struct {
 // Upload sends the local file at localPath to Drive, tagged with relPath. If a live
 // file with the same tag exists its content is replaced (same Drive ID),
 // otherwise a new file is created in the folder that mirrors relPath's
-// directory under MySync, creating any missing folders on the way. relPath
-// must be slash-form with no empty, "." or ".." component. It returns
+// directory under MySync, creating any missing folders on the way. folders
+// caches folder IDs (nil means no cache); the cache is best effort, so a cache
+// error never fails an upload. relPath must be slash-form with no empty, "." or ".." component. It returns
 // ErrNotSignedIn or ErrSessionExpired like EnsureRoot. extra options are for
 // tests.
-func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, localPath, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, folders *store.Repo, localPath, relPath string, extra ...option.ClientOption) (FileInfo, error) {
 	if err := validateRelPath(relPath); err != nil {
 		return FileInfo{}, err
 	}
@@ -86,7 +88,7 @@ func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileS
 		out, err = svc.Files.Update(existing.Id, &drv.File{AppProperties: tags}).
 			Media(f, media).Fields(uploadFields).Context(ctx).Do()
 	} else {
-		dirID, err := ensureDir(ctx, svc, rootID, path.Dir(relPath))
+		dirID, err := ensureDir(ctx, svc, folders, rootID, path.Dir(relPath))
 		if err != nil {
 			return FileInfo{}, sessionError(err)
 		}
@@ -174,20 +176,48 @@ func validateRelPath(relPath string) error {
 // root itself. A folder is found by name and parent (oldest wins when Drive
 // holds duplicates); folders carry no tags, because the tree already implies
 // the path.
-func ensureDir(ctx context.Context, svc *drv.Service, rootID, relDir string) (string, error) {
+//
+// folders, when not nil, caches relDir to folder ID. A cached ID is used only
+// after Drive confirms it exists and is not trashed; otherwise the folder is
+// looked up (or created) again and the cache rewritten, so a stale entry heals
+// itself. The cache is disposable, so its errors are treated as a miss.
+func ensureDir(ctx context.Context, svc *drv.Service, folders *store.Repo, rootID, relDir string) (string, error) {
 	if relDir == "." || relDir == "" {
 		return rootID, nil
 	}
-	parentID, err := ensureDir(ctx, svc, rootID, path.Dir(relDir))
+	if folders != nil {
+		if id, err := folders.GetFolder(ctx, relDir); err == nil {
+			ok, err := folderUsable(ctx, svc, id)
+			if err != nil {
+				return "", err
+			}
+			if ok {
+				return id, nil
+			}
+		}
+	}
+	parentID, err := ensureDir(ctx, svc, folders, rootID, path.Dir(relDir))
 	if err != nil {
 		return "", err
 	}
-	name := path.Base(relDir)
+	id, err := findOrCreateFolder(ctx, svc, parentID, path.Base(relDir))
+	if err != nil {
+		return "", fmt.Errorf("folder %s: %w", relDir, err)
+	}
+	if folders != nil {
+		_ = folders.PutFolder(ctx, relDir, id) // best effort
+	}
+	return id, nil
+}
+
+// findOrCreateFolder returns the oldest folder called name under parentID,
+// creating it when there is none.
+func findOrCreateFolder(ctx context.Context, svc *drv.Service, parentID, name string) (string, error) {
 	q := fmt.Sprintf("name = '%s' and mimeType = '%s' and '%s' in parents and trashed = false",
 		escapeQuery(name), folderMimeType, parentID)
 	found, err := oldestMatch(ctx, svc, q, "id")
 	if err != nil {
-		return "", fmt.Errorf("find folder %s: %w", relDir, err)
+		return "", fmt.Errorf("find: %w", err)
 	}
 	if found != nil {
 		return found.Id, nil
@@ -198,7 +228,7 @@ func ensureDir(ctx context.Context, svc *drv.Service, rootID, relDir string) (st
 		Parents:  []string{parentID},
 	}).Fields("id").Context(ctx).Do()
 	if err != nil {
-		return "", fmt.Errorf("create folder %s: %w", relDir, err)
+		return "", fmt.Errorf("create: %w", err)
 	}
 	return created.Id, nil
 }

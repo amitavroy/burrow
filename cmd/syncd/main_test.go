@@ -175,6 +175,9 @@ func TestRelPathFor(t *testing.T) {
 
 func TestPut(t *testing.T) {
 	dir := t.TempDir()
+	oldDB := dbPath
+	dbPath = func() string { return filepath.Join(dir, "state", "burrow.db") }
+	t.Cleanup(func() { dbPath = oldDB })
 	file := filepath.Join(dir, "notes.txt")
 	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
@@ -404,5 +407,32 @@ func TestScanReportsIgnoredAndUnreadable(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), wantCount) {
 		t.Errorf("stderr = %q, want it to contain %q", stderr.String(), wantCount)
+	}
+}
+
+func TestPutWithoutStateDB(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(file, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A regular file where the database directory should be, so it cannot open.
+	blocker := filepath.Join(dir, "blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDB := dbPath
+	dbPath = func() string { return filepath.Join(blocker, "burrow.db") }
+	t.Cleanup(func() { dbPath = oldDB })
+	keyring.MockInit()
+	t.Setenv("BURROW_GOOGLE_CLIENT_ID", "id")
+	t.Setenv("BURROW_GOOGLE_CLIENT_SECRET", "secret")
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"put", file}, &stdout, &stderr)
+
+	// The folder cache is optional: put warns and goes on to the sign-in check.
+	if code != 1 || !strings.Contains(stderr.String(), "continuing without the folder cache") || !strings.Contains(stderr.String(), "run `syncd login`") {
+		t.Errorf("code = %d, stderr = %q", code, stderr.String())
 	}
 }

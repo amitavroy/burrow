@@ -181,7 +181,16 @@ func put(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	info, err := drive.Upload(ctx, client, drive.KeyringStore{}, drive.FileStore{}, file, rel)
+	// The state database only caches folder IDs, so put carries on without it.
+	repo, err := store.OpenRepo(dbPath())
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: warning: state database unavailable, continuing without the folder cache: %v\n", err)
+		repo = nil
+	} else {
+		defer repo.Close()
+	}
+
+	info, err := drive.Upload(ctx, client, drive.KeyringStore{}, drive.FileStore{}, repo, file, rel)
 	if err != nil {
 		return reportDriveErr(stderr, "put", err)
 	}

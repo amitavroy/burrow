@@ -18,12 +18,16 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/amitavroy/burrow/internal/store"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
 )
 
 // fakeDir is a folder the fake Drive holds.
-type fakeDir struct{ id, name, parent string }
+type fakeDir struct {
+	id, name, parent string
+	trashed          bool
+}
 
 // uploadDrive fakes the Drive routes Upload touches: the token endpoint,
 // files.get for the cached root, the tag lookup, folder lookup and creation,
@@ -36,6 +40,7 @@ type uploadDrive struct {
 	tokenBody  string // when set, the token endpoint answers 400 with it
 	dirs       []fakeDir
 
+	dirGets     []string         // IDs asked of files.get
 	folderQs    []string         // folder lookup queries
 	createdDirs []map[string]any // folder create bodies, in order
 
@@ -92,7 +97,7 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		parent := folderParentRe.FindStringSubmatch(q)[1]
 		files := []map[string]any{}
 		for _, d := range f.dirs {
-			if d.name == name && d.parent == parent {
+			if d.name == name && d.parent == parent && !d.trashed {
 				files = append(files, map[string]any{"id": d.id})
 			}
 		}
@@ -111,6 +116,13 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"root-id","trashed":false}`))
 	case r.Method == http.MethodGet && strings.Contains(path, "/files/"):
 		id := path[strings.LastIndex(path, "/")+1:]
+		for _, d := range f.dirs {
+			if d.id == id {
+				f.dirGets = append(f.dirGets, id)
+				_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "trashed": d.trashed})
+				return
+			}
+		}
 		if id != f.existingID {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = w.Write([]byte(`{"error":{"code":404,"message":"File not found"}}`))
@@ -243,7 +255,7 @@ func TestUpload(t *testing.T) {
 			client, extra := setup(t, fd)
 			path := writeFile(t, tt.size)
 
-			info, err := Upload(context.Background(), client, signedIn(t, "stored-refresh"), cacheAt(t, "root-id"), path, tt.relPath, extra...)
+			info, err := Upload(context.Background(), client, signedIn(t, "stored-refresh"), cacheAt(t, "root-id"), nil, path, tt.relPath, extra...)
 			if err != nil {
 				t.Fatalf("Upload: %v", err)
 			}
@@ -299,7 +311,7 @@ func TestUploadEscapesQuery(t *testing.T) {
 	client, extra := setup(t, fd)
 	path := writeFile(t, 10)
 
-	if _, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), path, `it's a\b.txt`, extra...); err != nil {
+	if _, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), nil, path, `it's a\b.txt`, extra...); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	fd.mu.Lock()
@@ -333,7 +345,7 @@ func TestUploadErrors(t *testing.T) {
 			fd := &uploadDrive{tokenBody: tt.tokenBody}
 			client, extra := setup(t, fd)
 
-			_, err := Upload(context.Background(), client, signedIn(t, tt.stored), cacheAt(t, "root-id"), tt.path, "x.txt", extra...)
+			_, err := Upload(context.Background(), client, signedIn(t, tt.stored), cacheAt(t, "root-id"), nil, tt.path, "x.txt", extra...)
 
 			if err == nil {
 				t.Fatal("err = nil, want an error")
@@ -426,22 +438,22 @@ func TestUploadFolders(t *testing.T) {
 		},
 		{
 			name: "reuses folders that exist", relPath: "a/b/c.txt",
-			dirs:        []fakeDir{{"A", "a", "root-id"}, {"B", "b", "A"}},
+			dirs:        []fakeDir{{id: "A", name: "a", parent: "root-id"}, {id: "B", name: "b", parent: "A"}},
 			wantFolderQ: 2, wantParent: "B", wantMethod: http.MethodPost,
 		},
 		{
 			name: "creates only the missing level", relPath: "a/b/c.txt",
-			dirs:        []fakeDir{{"A", "a", "root-id"}},
+			dirs:        []fakeDir{{id: "A", name: "a", parent: "root-id"}},
 			wantCreated: []string{"b@A"}, wantFolderQ: 2, wantParent: "dir-1", wantMethod: http.MethodPost,
 		},
 		{
 			name: "a folder of the same name under another parent is not reused", relPath: "a/c.txt",
-			dirs:        []fakeDir{{"X", "a", "elsewhere"}},
+			dirs:        []fakeDir{{id: "X", name: "a", parent: "elsewhere"}},
 			wantCreated: []string{"a@root-id"}, wantFolderQ: 1, wantParent: "dir-1", wantMethod: http.MethodPost,
 		},
 		{
 			name: "duplicate folders: the oldest wins", relPath: "a/c.txt",
-			dirs:        []fakeDir{{"old", "a", "root-id"}, {"new", "a", "root-id"}},
+			dirs:        []fakeDir{{id: "old", name: "a", parent: "root-id"}, {id: "new", name: "a", parent: "root-id"}},
 			wantFolderQ: 1, wantParent: "old", wantMethod: http.MethodPost,
 		},
 		{
@@ -458,7 +470,7 @@ func TestUploadFolders(t *testing.T) {
 			fd := &uploadDrive{existingID: tt.existingID, dirs: tt.dirs}
 			client, extra := setup(t, fd)
 
-			_, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), writeFile(t, 10), tt.relPath, extra...)
+			_, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), nil, writeFile(t, 10), tt.relPath, extra...)
 			if err != nil {
 				t.Fatalf("Upload: %v", err)
 			}
@@ -499,7 +511,7 @@ func TestUploadFolderQueryEscaped(t *testing.T) {
 	fd := &uploadDrive{}
 	client, extra := setup(t, fd)
 
-	if _, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), writeFile(t, 1), `it's\x/c.txt`, extra...); err != nil {
+	if _, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), nil, writeFile(t, 1), `it's\x/c.txt`, extra...); err != nil {
 		t.Fatalf("Upload: %v", err)
 	}
 	fd.mu.Lock()
@@ -515,7 +527,7 @@ func TestUploadRejectsBadRelPath(t *testing.T) {
 			fd := &uploadDrive{}
 			client, extra := setup(t, fd)
 
-			_, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), writeFile(t, 1), rel, extra...)
+			_, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), nil, writeFile(t, 1), rel, extra...)
 
 			if err == nil || !strings.Contains(err.Error(), "invalid rel_path") {
 				t.Fatalf("err = %v, want invalid rel_path", err)
@@ -527,4 +539,140 @@ func TestUploadRejectsBadRelPath(t *testing.T) {
 			}
 		})
 	}
+}
+
+// repoAt opens a folder cache in a temp dir.
+func repoAt(t *testing.T) *store.Repo {
+	t.Helper()
+	r, err := store.OpenRepo(filepath.Join(t.TempDir(), "burrow.db"))
+	if err != nil {
+		t.Fatalf("OpenRepo: %v", err)
+	}
+	t.Cleanup(func() { r.Close() })
+	return r
+}
+
+func cachedFolder(t *testing.T, r *store.Repo, relDir string) string {
+	t.Helper()
+	id, err := r.GetFolder(context.Background(), relDir)
+	if err != nil {
+		t.Fatalf("GetFolder(%s): %v", relDir, err)
+	}
+	return id
+}
+
+func TestUploadFolderCache(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("a second file in the same directory makes no folder lookups", func(t *testing.T) {
+		fd := &uploadDrive{}
+		client, extra := setup(t, fd)
+		cache := repoAt(t)
+
+		for _, name := range []string{"a/b/one.txt", "a/b/two.txt"} {
+			if _, err := Upload(ctx, client, signedIn(t, "r"), cacheAt(t, "root-id"), cache, writeFile(t, 5), name, extra...); err != nil {
+				t.Fatalf("Upload %s: %v", name, err)
+			}
+		}
+
+		fd.mu.Lock()
+		defer fd.mu.Unlock()
+		if len(fd.createdDirs) != 2 || len(fd.folderQs) != 2 {
+			t.Errorf("creates/lookups = %d/%d, want 2/2 (all from the first file)", len(fd.createdDirs), len(fd.folderQs))
+		}
+		// Only the deepest cached folder is checked against Drive.
+		if len(fd.dirGets) != 1 || fd.dirGets[0] != "dir-2" {
+			t.Errorf("files.get calls = %v, want [dir-2]", fd.dirGets)
+		}
+		parents, _ := fd.meta["parents"].([]any)
+		if len(parents) != 1 || parents[0] != "dir-2" {
+			t.Errorf("second file parents = %v, want [dir-2]", fd.meta["parents"])
+		}
+		if cachedFolder(t, cache, "a") != "dir-1" || cachedFolder(t, cache, "a/b") != "dir-2" {
+			t.Error("both levels should be cached")
+		}
+	})
+
+	t.Run("a trashed cached folder is recreated and re-cached", func(t *testing.T) {
+		fd := &uploadDrive{dirs: []fakeDir{{id: "A", name: "a", parent: "root-id", trashed: true}}}
+		client, extra := setup(t, fd)
+		cache := repoAt(t)
+		if err := cache.PutFolder(ctx, "a", "A"); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := Upload(ctx, client, signedIn(t, "r"), cacheAt(t, "root-id"), cache, writeFile(t, 5), "a/c.txt", extra...); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+
+		fd.mu.Lock()
+		defer fd.mu.Unlock()
+		if len(fd.createdDirs) != 1 {
+			t.Fatalf("created folders = %d, want 1", len(fd.createdDirs))
+		}
+		if got := cachedFolder(t, cache, "a"); got != "dir-1" {
+			t.Errorf("cached id = %s, want the new folder dir-1", got)
+		}
+		parents, _ := fd.meta["parents"].([]any)
+		if len(parents) != 1 || parents[0] != "dir-1" {
+			t.Errorf("file parents = %v, want [dir-1]", fd.meta["parents"])
+		}
+	})
+
+	t.Run("a cached folder that is gone is looked up again", func(t *testing.T) {
+		fd := &uploadDrive{dirs: []fakeDir{{id: "A", name: "a", parent: "root-id"}}}
+		client, extra := setup(t, fd)
+		cache := repoAt(t)
+		if err := cache.PutFolder(ctx, "a", "GONE"); err != nil { // files.get answers 404
+			t.Fatal(err)
+		}
+
+		if _, err := Upload(ctx, client, signedIn(t, "r"), cacheAt(t, "root-id"), cache, writeFile(t, 5), "a/c.txt", extra...); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+
+		fd.mu.Lock()
+		defer fd.mu.Unlock()
+		if len(fd.createdDirs) != 0 {
+			t.Errorf("created %d folders, want none (the folder exists)", len(fd.createdDirs))
+		}
+		if got := cachedFolder(t, cache, "a"); got != "A" {
+			t.Errorf("cached id = %s, want A", got)
+		}
+	})
+
+	t.Run("a lost cache re-finds the existing folders without duplicating them", func(t *testing.T) {
+		fd := &uploadDrive{dirs: []fakeDir{
+			{id: "A", name: "a", parent: "root-id"},
+			{id: "B", name: "b", parent: "A"},
+		}}
+		client, extra := setup(t, fd)
+		cache := repoAt(t) // empty, as after deleting burrow.db
+
+		if _, err := Upload(ctx, client, signedIn(t, "r"), cacheAt(t, "root-id"), cache, writeFile(t, 5), "a/b/c.txt", extra...); err != nil {
+			t.Fatalf("Upload: %v", err)
+		}
+
+		fd.mu.Lock()
+		defer fd.mu.Unlock()
+		if len(fd.createdDirs) != 0 {
+			t.Errorf("created %d folders, want none", len(fd.createdDirs))
+		}
+		if cachedFolder(t, cache, "a") != "A" || cachedFolder(t, cache, "a/b") != "B" {
+			t.Error("the found folders should be cached")
+		}
+	})
+
+	t.Run("a closed cache never fails the upload", func(t *testing.T) {
+		fd := &uploadDrive{}
+		client, extra := setup(t, fd)
+		cache := repoAt(t)
+		if err := cache.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := Upload(ctx, client, signedIn(t, "r"), cacheAt(t, "root-id"), cache, writeFile(t, 5), "a/c.txt", extra...); err != nil {
+			t.Fatalf("Upload with a closed cache: %v", err)
+		}
+	})
 }
