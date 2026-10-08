@@ -44,15 +44,60 @@ type FileInfo struct {
 	WebLink    string
 }
 
-// Upload sends the local file at localPath to Drive, tagged with relPath. If a live
-// file with the same tag exists its content is replaced (same Drive ID),
-// otherwise a new file is created in the folder that mirrors relPath's
-// directory under MySync, creating any missing folders on the way. folders
-// caches folder IDs (nil means no cache); the cache is best effort, so a cache
-// error never fails an upload. relPath must be slash-form with no empty, "." or ".." component. It returns
-// ErrNotSignedIn or ErrSessionExpired like EnsureRoot. extra options are for
-// tests.
+// Upload sends one local file to Drive. It is NewUploader(...).Upload(...) for
+// a single call; use an Uploader to send many files, so the Drive service and
+// the MySync lookup are built once.
 func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileStore, folders *store.Repo, localPath, relPath string, extra ...option.ClientOption) (FileInfo, error) {
+	return NewUploader(client, tokens, roots, folders, extra...).Upload(ctx, localPath, relPath)
+}
+
+// Uploader sends local files to Drive. The Drive service, its token source
+// and the MySync folder ID are built on the first upload and reused after
+// that, so a whole tree costs one token refresh and one root check. It is not
+// safe for concurrent use.
+type Uploader struct {
+	client  Client
+	tokens  KeyringStore
+	roots   FileStore
+	folders *store.Repo
+	extra   []option.ClientOption
+
+	svc    *drv.Service
+	rootID string
+}
+
+// NewUploader returns an Uploader. folders caches folder IDs (nil means no
+// cache). Nothing is sent to Drive until the first Upload. extra options are
+// for tests.
+func NewUploader(client Client, tokens KeyringStore, roots FileStore, folders *store.Repo, extra ...option.ClientOption) *Uploader {
+	return &Uploader{client: client, tokens: tokens, roots: roots, folders: folders, extra: extra}
+}
+
+// connect builds the Drive service and finds the MySync folder, once.
+func (u *Uploader) connect(ctx context.Context) error {
+	if u.svc != nil {
+		return nil
+	}
+	svc, err := serviceFromStore(ctx, u.client, u.tokens, u.extra...)
+	if err != nil {
+		return err
+	}
+	rootID, err := ensureRootWith(ctx, svc, u.roots)
+	if err != nil {
+		return sessionError(err)
+	}
+	u.svc, u.rootID = svc, rootID
+	return nil
+}
+
+// Upload sends the local file at localPath to Drive, tagged with relPath. If a
+// live file with the same tag exists its content is replaced (same Drive ID),
+// otherwise a new file is created in the folder that mirrors relPath's
+// directory under MySync, creating any missing folders on the way. The folder
+// cache is best effort, so a cache error never fails an upload. relPath must
+// be slash-form with no empty, "." or ".." component. It returns
+// ErrNotSignedIn or ErrSessionExpired like EnsureRoot.
+func (u *Uploader) Upload(ctx context.Context, localPath, relPath string) (FileInfo, error) {
 	if err := validateRelPath(relPath); err != nil {
 		return FileInfo{}, err
 	}
@@ -67,16 +112,10 @@ func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileS
 		return FileInfo{}, fmt.Errorf("%s is a directory", localPath)
 	}
 
-	svc, err := serviceFromStore(ctx, client, tokens, extra...)
-	if err != nil {
+	if err := u.connect(ctx); err != nil {
 		return FileInfo{}, err
 	}
-	rootID, err := ensureRootWith(ctx, svc, roots)
-	if err != nil {
-		return FileInfo{}, sessionError(err)
-	}
-
-	existing, err := findByTags(ctx, svc, relPath)
+	existing, err := findByTags(ctx, u.svc, relPath)
 	if err != nil {
 		return FileInfo{}, sessionError(err)
 	}
@@ -85,14 +124,15 @@ func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileS
 	media := googleapi.ChunkSize(uploadChunkSize)
 	var out *drv.File
 	if existing != nil {
-		out, err = svc.Files.Update(existing.Id, &drv.File{AppProperties: tags}).
+		out, err = u.svc.Files.Update(existing.Id, &drv.File{AppProperties: tags}).
 			Media(f, media).Fields(uploadFields).Context(ctx).Do()
 	} else {
-		dirID, err := ensureDir(ctx, svc, folders, rootID, path.Dir(relPath))
+		var dirID string
+		dirID, err = ensureDir(ctx, u.svc, u.folders, u.rootID, path.Dir(relPath))
 		if err != nil {
 			return FileInfo{}, sessionError(err)
 		}
-		out, err = svc.Files.Create(&drv.File{
+		out, err = u.svc.Files.Create(&drv.File{
 			Name:          path.Base(relPath),
 			Parents:       []string{dirID},
 			AppProperties: tags,

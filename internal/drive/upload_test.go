@@ -41,6 +41,9 @@ type uploadDrive struct {
 	dirs       []fakeDir
 
 	dirGets     []string         // IDs asked of files.get
+	tokenReqs   int              // requests to the token endpoint
+	rootGets    int              // files.get calls for the cached root
+	failCreate  int              // when set, uploads answer this HTTP status
 	folderQs    []string         // folder lookup queries
 	createdDirs []map[string]any // folder create bodies, in order
 
@@ -63,6 +66,7 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case path == "/token":
+		f.tokenReqs++
 		if f.tokenBody != "" {
 			w.WriteHeader(http.StatusBadRequest)
 			_, _ = w.Write([]byte(f.tokenBody))
@@ -113,6 +117,7 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"files": files})
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/files/root-id"):
+		f.rootGets++
 		_, _ = w.Write([]byte(`{"id":"root-id","trashed":false}`))
 	case r.Method == http.MethodGet && strings.Contains(path, "/files/"):
 		id := path[strings.LastIndex(path, "/")+1:]
@@ -155,6 +160,11 @@ func existingFile(id string) map[string]any {
 // multipart takes a file that fits in one chunk: metadata JSON, then content,
 // in a single multipart/related request.
 func (f *uploadDrive) multipart(w http.ResponseWriter, r *http.Request) {
+	if f.failCreate != 0 {
+		w.WriteHeader(f.failCreate)
+		_, _ = w.Write([]byte(`{"error":{"code":` + strconv.Itoa(f.failCreate) + `,"message":"nope"}}`))
+		return
+	}
 	f.method = r.Method
 	if r.Method == http.MethodPatch {
 		f.patchID = r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
@@ -675,4 +685,49 @@ func TestUploadFolderCache(t *testing.T) {
 			t.Fatalf("Upload with a closed cache: %v", err)
 		}
 	})
+}
+
+func TestUploaderBuildsTheServiceOnce(t *testing.T) {
+	fd := &uploadDrive{}
+	client, extra := setup(t, fd)
+	u := NewUploader(client, signedIn(t, "r"), cacheAt(t, "root-id"), nil, extra...)
+
+	for _, rel := range []string{"x/a.txt", "x/b.txt", "c.txt"} {
+		if _, err := u.Upload(context.Background(), writeFile(t, 5), rel); err != nil {
+			t.Fatalf("Upload %s: %v", rel, err)
+		}
+	}
+
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	if fd.tokenReqs != 1 {
+		t.Errorf("token requests = %d, want 1 for three files", fd.tokenReqs)
+	}
+	if fd.rootGets != 1 {
+		t.Errorf("MySync root checks = %d, want 1 for three files", fd.rootGets)
+	}
+}
+
+func TestUploaderNotSignedIn(t *testing.T) {
+	fd := &uploadDrive{}
+	client, extra := setup(t, fd)
+	u := NewUploader(client, signedIn(t, ""), cacheAt(t, "root-id"), nil, extra...)
+
+	for i := 0; i < 2; i++ { // still reports it on a later call
+		if _, err := u.Upload(context.Background(), writeFile(t, 5), "a.txt"); !errors.Is(err, ErrNotSignedIn) {
+			t.Fatalf("call %d: err = %v, want ErrNotSignedIn", i, err)
+		}
+	}
+}
+
+func TestUploadCreateFailureIsAnError(t *testing.T) {
+	fd := &uploadDrive{failCreate: http.StatusBadRequest}
+	client, extra := setup(t, fd)
+
+	for _, rel := range []string{"a.txt", "d/a.txt"} { // without and with a folder to create first
+		_, err := Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), nil, writeFile(t, 5), rel, extra...)
+		if err == nil || !strings.Contains(err.Error(), "upload "+rel) {
+			t.Errorf("%s: err = %v, want an upload error", rel, err)
+		}
+	}
 }
