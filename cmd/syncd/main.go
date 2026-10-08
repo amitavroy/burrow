@@ -325,8 +325,8 @@ func scan(args []string, stdout, stderr io.Writer) int {
 }
 
 // syncCmd uploads every file under the sync root to Drive, one at a time.
-// Per-file failures are reported and make the exit code 1; a lost sign-in or
-// Ctrl+C stops the run.
+// Files already recorded in the state database are skipped. Per-file failures
+// are reported and make the exit code 1; a lost sign-in or Ctrl+C stops the run.
 func syncCmd(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
 	fs.SetOutput(stderr)
@@ -355,8 +355,16 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, nil)
-	sum, err := burrowsync.Sync(ctx, root, uploader.Upload, func(e burrowsync.Event) {
+	// Unlike put, sync needs the state database: it records every file's Drive ID.
+	repo, err := store.OpenRepo(dbPath())
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: sync failed: %v\n", err)
+		return 1
+	}
+	defer repo.Close()
+
+	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
+	sum, err := burrowsync.Sync(ctx, root, repo, uploader.Upload, func(e burrowsync.Event) {
 		if e.Err != nil {
 			fmt.Fprintf(stderr, "failed %s: %v\n", e.RelPath, e.Err)
 			return
@@ -366,7 +374,7 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 	for _, e := range sum.Unreadable {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
 	}
-	fmt.Fprintf(stderr, "%d uploaded, %d failed, %d ignored\n", sum.Uploaded, sum.Failed, sum.Ignored)
+	fmt.Fprintf(stderr, "%d uploaded, %d already synced, %d failed, %d ignored\n", sum.Uploaded, sum.Synced, sum.Failed, sum.Ignored)
 	switch {
 	case errors.Is(err, context.Canceled):
 		fmt.Fprintln(stderr, "syncd: sync interrupted")

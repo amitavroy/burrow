@@ -439,6 +439,10 @@ func TestPutWithoutStateDB(t *testing.T) {
 
 func TestSync(t *testing.T) {
 	root := t.TempDir()
+	oldDB := dbPath
+	stateDir := t.TempDir()
+	dbPath = func() string { return filepath.Join(stateDir, "burrow.db") }
+	t.Cleanup(func() { dbPath = oldDB })
 	for _, rel := range []string{"a.txt", "d/b.txt", "skip.tmp"} {
 		p := filepath.Join(root, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
@@ -485,6 +489,9 @@ func TestSync(t *testing.T) {
 
 func TestSyncDefaultRootIsMySync(t *testing.T) {
 	home := t.TempDir() // no MySync inside
+	oldDB := dbPath
+	dbPath = func() string { return filepath.Join(home, "state", "burrow.db") }
+	t.Cleanup(func() { dbPath = oldDB })
 	old := homeDir
 	homeDir = func() (string, error) { return home, nil }
 	t.Cleanup(func() { homeDir = old })
@@ -497,5 +504,30 @@ func TestSyncDefaultRootIsMySync(t *testing.T) {
 
 	if code != 1 || !strings.Contains(stderr.String(), "MySync") {
 		t.Errorf("code = %d, stderr = %q; want exit 1 naming the default root", code, stderr.String())
+	}
+}
+
+func TestSyncNeedsTheStateDatabase(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "tree")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blocker := filepath.Join(dir, "blocker") // a file where the database directory should be
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDB := dbPath
+	dbPath = func() string { return filepath.Join(blocker, "burrow.db") }
+	t.Cleanup(func() { dbPath = oldDB })
+	keyring.MockInit()
+	t.Setenv("BURROW_GOOGLE_CLIENT_ID", "id")
+	t.Setenv("BURROW_GOOGLE_CLIENT_SECRET", "secret")
+	var stdout, stderr bytes.Buffer
+
+	code := run([]string{"sync", "--root", root}, &stdout, &stderr)
+
+	if code != 1 || !strings.Contains(stderr.String(), "sync failed") {
+		t.Errorf("code = %d, stderr = %q; want exit 1 because the database cannot open", code, stderr.String())
 	}
 }
