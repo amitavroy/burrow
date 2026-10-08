@@ -158,12 +158,12 @@ Layout: `rel_path` `a/b/c.txt` lands in `MySync/a/b/` with the name `c.txt`. Dir
 - Tag values and folder names are escaped (`\` and `'`) in queries.
 - File lookup does not depend on the parent folder, so a file is found wherever it sits (this also keeps later renames and moves working).
 - Folder cache: `syncd put` opens the state database and keeps `rel_dir -> Drive folder ID` in its `folders` table (see State database). A cached ID is trusted only after `files.get` shows it exists and is not trashed; only the deepest folder is checked, because trashing a folder trashes its contents. A stale entry heals itself by looking the folder up again. The cache is best effort: if the database cannot be opened, `put` prints a warning and works without it; cache read and write errors never fail an upload. With no cache, or after deleting `burrow.db`, existing folders are found again, not duplicated.
-- Two concurrent uploads could create the same folder twice; duplicates are tolerated (oldest wins). Any single-flight guard belongs to ticket 11.
+- Two concurrent uploads could create the same folder twice; duplicates are tolerated (oldest wins). `syncd sync` is sequential, so any single-flight guard belongs with bounded concurrency in ticket 17.
 - Files that fit in one 8 MB chunk go as one multipart request; larger ones use a resumable upload in 8 MB chunks. The file is streamed from disk, never read whole.
 - Folders are found by name, parent and mimeType (`trashed = false`), and the oldest wins if Drive holds duplicates. They carry no `appProperties`, because the tree already implies the path. Names are escaped like tag values. Folder rename and delete come with ticket 27, and the MD5 skip and retries with tickets 12 and 16.
 - Requested fields: `id,name,md5Checksum,size,headRevisionId,appProperties,webViewLink`.
 - Same exit-1 hints as `whoami` when not signed in or the session expired. Usage errors exit 2.
-- Code: `drive.Upload`, `drive.Stat`, `drive.FindByTags`, `drive.FileInfo`, `ErrFileNotFound`, `ensureDir` (`internal/drive/upload.go`); the cached-folder check is `folderUsable` (`root.go`). Service setup is shared through `serviceFromStore` (`root.go`), and the oldest-match list query behind `FindByTags` and the root lookup is `oldestMatch` (`upload.go`). Each operation is one exported function that takes a `drive.Client`; tests point its optional `Endpoint` at a fake OAuth server.
+- Code: `drive.Upload`, `drive.Stat`, `drive.FindByTags`, `drive.FileInfo`, `ErrFileNotFound`, `ensureDir` (`internal/drive/upload.go`); the cached-folder check is `folderUsable` (`root.go`). Service setup is shared through `serviceFromStore` (`root.go`), and the oldest-match list query behind `FindByTags` and the root lookup is `oldestMatch` (`upload.go`). Each operation is one exported function that takes a `drive.Client`; tests point its optional `Endpoint` at a fake OAuth server. `drive.Upload` is `NewUploader(...).Upload(...)` for one call; `drive.Uploader` keeps the Drive service and `MySync` ID so many files share them (see "One-shot sync").
 
 ### Stat
 
@@ -181,6 +181,7 @@ Layout: `rel_path` `a/b/c.txt` lands in `MySync/a/b/` with the name `c.txt`. Dir
 - Second migration `00002_folders.sql` creates `folders(rel_dir PRIMARY KEY, drive_folder_id)`: the folder-ID cache for nested uploads. `rel_dir` is slash-form and relative to the root, like `files.rel_path`. `Repo.GetFolder` returns `ErrNotFound` when absent, and `Repo.PutFolder` is an upsert. Like everything here, it is disposable cache.
 - Repository: `store.OpenRepo(path)` calls `Open` and starts one goroutine that owns the `*sql.DB`. `Upsert` (keyed by `rel_path`), `Get`, `GetByDriveID`, `List` (ordered by `rel_path`) and `Delete` send a request over a channel and wait for the reply, so callers never see SQL or the connection. Every method takes a `context.Context`; a cancelled context returns early, but the owner still finishes the statement it started.
 - `Repo` errors: `ErrNotFound` (missing row on `Get`, `GetByDriveID`, `Delete`) and `ErrClosed` (any call after `Close`). A panic inside a request is recovered and returned as an error, and the owner keeps serving. `Close` is safe to call twice.
+- `syncd sync` is what writes `files` rows today (see "One-shot sync"); `local_md5`, `base_md5` and `base_revision_id` stay NULL until tickets 12 and 13.
 - NULL mapping: an empty string or zero `Inode` is stored as NULL and read back as the zero value, so "no Drive ID yet" is a real NULL and the unique `drive_file_id` index ignores it. `File.MTime` is Unix nanoseconds.
 - `store.Status(db)` returns the migration version and the user table names (`files`, `folders` and goose's `goose_db_version`).
 - `state.json` stays for now; folding the root folder ID into the database is a later cleanup.
@@ -188,7 +189,7 @@ Layout: `rel_path` `a/b/c.txt` lands in `MySync/a/b/` with the name `c.txt`. Dir
 
 ## Scanning
 
-`syncd scan --dry-run` lists the files a sync would upload. It only reads the local folder; no Drive or database is involved, so the same function (`sync.Scan`) will feed the one-shot sync (ticket 11) and startup reconciliation (ticket 22).
+`syncd scan --dry-run` lists the files a sync would upload. It only reads the local folder; no Drive or database is involved, so the same function (`sync.Scan`) feeds the one-shot sync (see "One-shot sync") and startup reconciliation (ticket 22).
 
 ```
 syncd scan --dry-run [--root DIR]        (--dry-run required, else usage and exit 2)
@@ -208,6 +209,34 @@ syncd scan --dry-run [--root DIR]        (--dry-run required, else usage and exi
 - Two rules cannot be overridden: any path with a `.git` component is ignored, and `.syncignore` at the root is never listed or uploaded. Whether `.syncignore` should sync to a new machine belongs to ticket 28 (`config.json`).
 - Matching runs on slash-form paths on every OS. Case sensitivity follows the library; Windows case-insensitivity is not handled.
 - Code: `internal/sync/scan.go`, `ignore.go`; the `scan` command in `cmd/syncd/main.go`.
+
+## One-shot sync
+
+`syncd sync` uploads every file under the sync root to Drive and records each file's Drive ID in the state database. Rule: Drive stays the source of truth; a row only says "this `rel_path` is on Drive as this ID", so losing the database costs nothing but time.
+
+```
+syncd sync [--root DIR]                 (root defaults to ~/MySync; usage error exits 2)
+  -> store.OpenRepo(dbPath())            (required: if it cannot open, exit 1)
+  -> drive.NewUploader(...)              (Drive service, token source and MySync ID built once, on the first upload)
+  -> sync.Sync(ctx, root, repo, uploader.Upload, report):
+       res := Scan(root)                 (ignore rules and skipped entries as in "Scanning")
+       for each entry, in rel_path order:
+         row with a Drive ID  -> already synced, skip (not compared)
+         upload(ctx, root/rel_path, rel_path)
+           ok                 -> write the row, report "uploaded rel_path"
+           sign-in lost       -> abort
+           cancelled (Ctrl+C) -> abort
+           other error        -> report "failed rel_path: reason", carry on
+  -> stderr: "N uploaded, M already synced, K failed, I ignored"; exit 0, or 1 if any file failed or the run aborted
+```
+
+- Output: `uploaded <rel_path>` lines on stdout; `failed <rel_path>: <reason>`, `skipped: <unreadable entry>` and the summary on stderr. Exit 1 for a failed file or an abort (sign-in lost, interrupted, root unreadable, database failure), with the same login hints as the other commands.
+- A file is uploaded when it has no row, or a row with no Drive ID. A file that already has a row is skipped without any check, so an edited file is not re-uploaded yet: change detection (MD5 skip and updates) is ticket 12.
+- The row holds `drive_file_id`, `synced_md5` (Drive's `md5Checksum`), and the `size` and `mtime` seen by the scan before the upload. If the file changes while it uploads, the stored values are older than the file, which errs toward a re-upload once ticket 12 compares them. `local_md5`, `base_md5` and `base_revision_id` stay empty until tickets 12 and 13.
+- The row is written right after each upload, ignoring cancellation, so Ctrl+C or a crash loses at most the file in flight and a rerun resumes. A file uploaded but not recorded is found again by its `rel_path` tag and updated in place, never duplicated. A failed upload writes no row, so the next run retries it.
+- Uploads are sequential. A run that hits a repeating problem (for example a dead network or an `invalid_client` error) reports each file as failed instead of aborting; only a lost sign-in aborts. Retries with backoff come with ticket 16, and the queue with bounded concurrency with ticket 17.
+- The same state database also holds the folder-ID cache (see "Uploading a file"), so the folders of a tree are resolved once.
+- Code: `sync.Sync`, `UploadFunc`, `Event`, `Summary` (`internal/sync/sync.go`); `drive.Uploader` and `NewUploader` (`internal/drive/upload.go`); the `sync` command in `cmd/syncd/main.go`. `Sync` takes the upload as a function, so the engine is tested with a fake and no HTTP.
 
 ## Development
 
@@ -229,6 +258,7 @@ syncd <command>
   put      -> [--root DIR] <file>: uploads into MySync/ with a rel_path tag; the same rel_path updates the same file
   stat     -> <file-id> or --path <rel_path>: prints ID, name, size, MD5, revision and rel_path
   scan     -> --dry-run [--root DIR]: lists the files a sync would upload, after ignore rules
+  sync     -> [--root DIR]: uploads every file under the root not yet recorded in the state database; records Drive IDs
   (none)   -> usage on stderr, exit 2
   unknown  -> error on stderr, exit 2
 ```

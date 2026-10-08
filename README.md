@@ -87,6 +87,16 @@ bin/syncd scan --dry-run [--root DIR]   # lists the files a sync would upload; c
 
 Ignored by default: `.git`, `node_modules`, `*.tmp` and `~$*` (editor temp files). To add your own rules, put a `.syncignore` file in the root, in gitignore syntax (`*.log`, `build/`, `**/gen/*.go`, `!keep.log`). A rule can re-include a default such as `*.tmp`, but never `.git`, and `.syncignore` itself is never listed.
 
+## Syncing a folder
+
+```
+bin/syncd sync [--root DIR]   # uploads every file under the root that is not recorded yet
+```
+
+The root defaults to `~/MySync`. Each file is uploaded into the Drive folder that mirrors its path, in `rel_path` order, and `sync` prints `uploaded <rel_path>` for each one. The same ignore rules as `scan` apply (see above), so run `scan --dry-run` first to see what would go. Failed files are listed on stderr with a summary (`N uploaded, M already synced, K failed, I ignored`), and the exit code is 1 if any failed.
+
+Every uploaded file gets a row in the state database (see below). A file that already has a row is skipped, so a second run uploads nothing and an interrupted run (Ctrl+C) simply continues where it stopped. For now an edited file is not re-uploaded; that arrives with the MD5 check. The database is disposable: delete `burrow.db` and the next run finds each file in Drive by its path and updates it in place, without duplicates. `sync` needs the database, so it stops with an error if it cannot open.
+
 ## State database
 
 ```
