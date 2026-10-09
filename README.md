@@ -114,6 +114,15 @@ bin/syncd db status   # opens and migrates it, then prints path, migration versi
 
 The database is a local SQLite cache at `burrow.db` in the app data dir (`~/.local/share/burrow/` on Linux), next to `state.json`. Drive is the source of truth, so the file is disposable: delete it and the next `db status` recreates it. It is never synced and never inside the sync root.
 
+## Logging
+
+```
+SYNC_LOG=debug bin/syncd sync --root tree   # log lines on stderr at that level
+bin/syncd sync --root tree                  # info lines go to the log file instead
+```
+
+`SYNC_LOG` takes `debug`, `info`, `warn` or `error`; any other value exits 2. Without it, `info` and above are written to `~/.local/share/burrow/logs/syncd.log` (10 MB files, 10 backups) and stderr only shows command output. Lines carry `path`, `job` and `drive_file_id`. Tokens, auth headers and file contents are never logged.
+
 ## Development
 
 ```

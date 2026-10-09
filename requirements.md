@@ -292,7 +292,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 11 | M2 One-shot sync | One-shot sync command | `syncd sync`: upload new files, store Drive file IDs in the DB | The whole sync root appears in Drive | 8, 9, 10 | => Done
 | 12 | M2 One-shot sync | MD5 skip and updates | Streamed MD5; skip when it matches; `files.update` for changed files | **Checkpoint:** a second run uploads 0 files; editing one file uploads only that file | 11 | => Done
 | 13 | M2 One-shot sync | Revision tracking | Write `headRevisionId` to `base_revision_id`, `base_md5` and `file_revisions` | `syncd history <path>` lists revisions | 12 | => Done
-| 14 | M3 Robust uploads | Logging | `log/slog` text handler to stderr, `SYNC_LOG` level, `lumberjack` rotation | Log lines carry path, job ID and Drive file ID | 1 |
+| 14 | M3 Robust uploads | Logging | `log/slog` text handler to stderr, `SYNC_LOG` level, `lumberjack` rotation | Log lines carry path, job ID and Drive file ID | 1 | => Done
 | 15 | M3 Robust uploads | Resumable uploads | 8 MB chunked resumable uploads streamed from disk | A 1 GB file uploads with flat memory use | 12 |
 | 16 | M3 Robust uploads | Retries with backoff | Exponential backoff with jitter on 403, 429 and 5xx | Tests against a fake server that returns 429 then 200 | 12 |
 | 17 | M3 Robust uploads | Persistent job queue | Jobs table in SQLite; a worker drains it with bounded concurrency | Kill the process mid-sync; on restart it resumes | 8, 12 |

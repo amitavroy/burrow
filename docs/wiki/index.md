@@ -244,6 +244,24 @@ syncd sync [--root DIR]                 (root defaults to ~/MySync; usage error 
 - The same state database also holds the folder-ID cache (see "Uploading a file"), so the folders of a tree are resolved once.
 - Code: `sync.Sync`, `UploadFunc`, `Event`, `Summary` (`internal/sync/sync.go`); `drive.Uploader` and `NewUploader` (`internal/drive/upload.go`); the `sync` command in `cmd/syncd/main.go`. `Sync` takes the upload as a function, so the engine is tested with a fake and no HTTP.
 
+## Logging
+
+Rule: diagnostics go through `log/slog`, installed once in `main`; user-facing results stay on stdout and stderr, and user-facing errors will come from the `sync_errors` table (ticket 18), never from parsing logs.
+
+```
+main -> setupLogger(os.Getenv("SYNC_LOG"), stderr, store.LogPath())
+          SYNC_LOG set    -> text handler on stderr at that level (debug, info, warn, error); anything else exits 2
+          SYNC_LOG unset  -> text handler at info into a rotating file; stderr stays free for command output
+        run(...) ; closeLog() flushes and closes the file before exit
+```
+
+- File: `burrow/logs/syncd.log` in the `adrg/xdg` data dir (Local on Windows), next to the database; the directory is created with mode 0700. `lumberjack` rotates at 10 MB and keeps 10 compressed backups. `store.LogPath()` only computes the path.
+- Packages log through `slog.Default()` rather than taking a logger, so `Sync` and `Uploader` signatures are unchanged. Tests install their own handler; `run` never touches the logger.
+- Attributes on `internal/sync` lines: `path` (the `rel_path`), `job` and `drive_file_id`. `job` is the file's 1-based position within a run, a stand-in until the job queue (ticket 17) provides real job IDs under the same name. `uploaded`, `updated` and `refreshed row` are info; `unchanged` and the Drive call (`drive upload done`, in `internal/drive`) are debug; a failed hash or upload is warn; a failed row write or lost sign-in is error. A new file that fails has an empty `drive_file_id`, since Drive never assigned one.
+- Never logged: tokens, auth headers, request bodies, SQL arguments, file contents. Only paths, IDs, sizes and error text.
+- Not yet: panic recovery logging (ticket 23) and the settings toggle for debug logging (ticket 36).
+- Code: `setupLogger`, `parseLevel` (`cmd/syncd/log.go`), `store.LogPath` (`internal/store/path.go`); log calls in `sync.Sync` and `Uploader.Upload`.
+
 ## Development
 
 How to build and check the project locally. There is no CI (see ADR-002), so run the checks before committing or merging.
