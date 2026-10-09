@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/amitavroy/burrow/internal/drive"
+	"github.com/amitavroy/burrow/internal/store"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 )
@@ -529,5 +532,53 @@ func TestSyncNeedsTheStateDatabase(t *testing.T) {
 
 	if code != 1 || !strings.Contains(stderr.String(), "sync failed") {
 		t.Errorf("code = %d, stderr = %q; want exit 1 because the database cannot open", code, stderr.String())
+	}
+}
+
+func TestHistory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "burrow.db")
+	oldDB := dbPath
+	dbPath = func() string { return path }
+	t.Cleanup(func() { dbPath = oldDB })
+
+	repo, err := store.OpenRepo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := store.File{RelPath: "a/b.txt", DriveFileID: "id-1"}
+	at := time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
+	for i, rev := range []string{"r1", "r2"} {
+		err := repo.RecordUpload(context.Background(), f, store.Revision{
+			DriveFileID: "id-1", RevisionID: rev, MD5: "m-" + rev, Size: int64(10 + i),
+			Time: at.Add(time.Duration(i) * time.Hour).UnixNano(), Source: "upload",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	repo.Close()
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantCode   int
+		wantStdout string
+		wantStderr string
+	}{
+		{name: "newest first", args: []string{"history", "a/b.txt"}, wantCode: 0,
+			wantStdout: "2026-10-09T13:00:00Z  r2  m-r2  11  upload\n2026-10-09T12:00:00Z  r1  m-r1  10  upload\n"},
+		{name: "unknown path", args: []string{"history", "nope.txt"}, wantCode: 1, wantStderr: "no revisions recorded"},
+		{name: "no argument is a usage error", args: []string{"history"}, wantCode: 2, wantStderr: "usage: syncd history"},
+		{name: "two arguments is a usage error", args: []string{"history", "a", "b"}, wantCode: 2, wantStderr: "usage: syncd history"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tt.args, &stdout, &stderr)
+			if code != tt.wantCode || stdout.String() != tt.wantStdout || !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Errorf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+			}
+		})
 	}
 }

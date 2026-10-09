@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
@@ -391,6 +392,40 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// history lists the revisions recorded for one rel_path, newest first. It
+// reads the state database only; no Drive call or sign-in is needed.
+func history(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("history", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(stderr, "usage: syncd history <rel_path>")
+		return 2
+	}
+	rel := fs.Arg(0)
+	repo, err := store.OpenRepo(dbPath())
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: history failed: %v\n", err)
+		return 1
+	}
+	defer repo.Close()
+	revs, err := repo.Revisions(context.Background(), rel)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: history failed: %v\n", err)
+		return 1
+	}
+	if len(revs) == 0 {
+		fmt.Fprintf(stderr, "syncd: no revisions recorded for %q\n", rel)
+		return 1
+	}
+	for _, r := range revs {
+		fmt.Fprintf(stdout, "%s  %s  %s  %d  %s\n", time.Unix(0, r.Time).UTC().Format(time.RFC3339), r.RevisionID, r.MD5, r.Size, r.Source)
+	}
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -418,6 +453,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return scan(args[1:], stdout, stderr)
 	case "sync":
 		return syncCmd(args[1:], stdout, stderr)
+	case "history":
+		return history(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2
