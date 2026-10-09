@@ -181,7 +181,7 @@ Layout: `rel_path` `a/b/c.txt` lands in `MySync/a/b/` with the name `c.txt`. Dir
 - Second migration `00002_folders.sql` creates `folders(rel_dir PRIMARY KEY, drive_folder_id)`: the folder-ID cache for nested uploads. `rel_dir` is slash-form and relative to the root, like `files.rel_path`. `Repo.GetFolder` returns `ErrNotFound` when absent, and `Repo.PutFolder` is an upsert. Like everything here, it is disposable cache.
 - Repository: `store.OpenRepo(path)` calls `Open` and starts one goroutine that owns the `*sql.DB`. `Upsert` (keyed by `rel_path`), `Get`, `GetByDriveID`, `List` (ordered by `rel_path`) and `Delete` send a request over a channel and wait for the reply, so callers never see SQL or the connection. Every method takes a `context.Context`; a cancelled context returns early, but the owner still finishes the statement it started.
 - `Repo` errors: `ErrNotFound` (missing row on `Get`, `GetByDriveID`, `Delete`) and `ErrClosed` (any call after `Close`). A panic inside a request is recovered and returned as an error, and the owner keeps serving. `Close` is safe to call twice.
-- `syncd sync` is what writes `files` rows today (see "One-shot sync"); `local_md5`, `base_md5` and `base_revision_id` stay NULL until tickets 12 and 13.
+- `syncd sync` is what writes `files` rows today (see "One-shot sync"); `local_md5` is set when a run hashes a file; `base_md5` and `base_revision_id` stay NULL until ticket 13.
 - NULL mapping: an empty string or zero `Inode` is stored as NULL and read back as the zero value, so "no Drive ID yet" is a real NULL and the unique `drive_file_id` index ignores it. `File.MTime` is Unix nanoseconds.
 - `store.Status(db)` returns the migration version and the user table names (`files`, `folders` and goose's `goose_db_version`).
 - `state.json` stays for now; folding the root folder ID into the database is a later cleanup.
@@ -221,18 +221,21 @@ syncd sync [--root DIR]                 (root defaults to ~/MySync; usage error 
   -> sync.Sync(ctx, root, repo, uploader.Upload, report):
        res := Scan(root)                 (ignore rules and skipped entries as in "Scanning")
        for each entry, in rel_path order:
-         row with a Drive ID  -> already synced, skip (not compared)
+         row with a Drive ID:
+           size and mtime equal the row -> already synced, skip (no read)
+           else stream-hash the file; MD5 equals synced_md5 -> already synced, refresh the row
+           else (changed, or row has no synced_md5)      -> upload below, as an update
          upload(ctx, root/rel_path, rel_path)
-           ok                 -> write the row, report "uploaded rel_path"
+           ok                 -> write the row, report "uploaded rel_path" (new) or "updated rel_path"
            sign-in lost       -> abort
            cancelled (Ctrl+C) -> abort
            other error        -> report "failed rel_path: reason", carry on
-  -> stderr: "N uploaded, M already synced, K failed, I ignored"; exit 0, or 1 if any file failed or the run aborted
+  -> stderr: "N uploaded, M updated, K already synced, J failed, I ignored"; exit 0, or 1 if any file failed or the run aborted
 ```
 
-- Output: `uploaded <rel_path>` lines on stdout; `failed <rel_path>: <reason>`, `skipped: <unreadable entry>` and the summary on stderr. Exit 1 for a failed file or an abort (sign-in lost, interrupted, root unreadable, database failure), with the same login hints as the other commands.
-- A file is uploaded when it has no row, or a row with no Drive ID. A file that already has a row is skipped without any check, so an edited file is not re-uploaded yet: change detection (MD5 skip and updates) is ticket 12.
-- The row holds `drive_file_id`, `synced_md5` (Drive's `md5Checksum`), and the `size` and `mtime` seen by the scan before the upload. If the file changes while it uploads, the stored values are older than the file, which errs toward a re-upload once ticket 12 compares them. `local_md5`, `base_md5` and `base_revision_id` stay empty until tickets 12 and 13.
+- Output: `uploaded <rel_path>` and `updated <rel_path>` lines on stdout; `failed <rel_path>: <reason>`, `skipped: <unreadable entry>` and the summary on stderr. Exit 1 for a failed file or an abort (sign-in lost, interrupted, root unreadable, database failure), with the same login hints as the other commands.
+- A file is uploaded as new when it has no row, or a row with no Drive ID. For a file with a row, change detection is two steps: same size and mtime means unchanged with no read; otherwise the file is stream-hashed (MD5, never loaded whole) and compared to `synced_md5`, which is what Drive holds. An equal hash only refreshes the row (`size`, `mtime`, `local_md5`), so a `touch` or a restore that resets mtimes uploads nothing. A different hash goes through `Uploader.Upload`, which finds the file by its `rel_path` tag and calls `files.update`, so the Drive file ID is kept. A row without `synced_md5` counts as changed and is re-uploaded once. Accepted limit: an edit that keeps both size and mtime is not noticed.
+- The row holds `drive_file_id`, `synced_md5` (Drive's `md5Checksum`), and the `size` and `mtime` seen by the scan before the upload. If the file changes while it uploads, the stored values are older than the file, which errs toward a re-upload on the next run. `local_md5` is a cache of the last hash taken; `base_md5` and `base_revision_id` stay empty until ticket 13.
 - The row is written right after each upload, ignoring cancellation, so Ctrl+C or a crash loses at most the file in flight and a rerun resumes. A file uploaded but not recorded is found again by its `rel_path` tag and updated in place, never duplicated. A failed upload writes no row, so the next run retries it.
 - Uploads are sequential. A run that hits a repeating problem (for example a dead network or an `invalid_client` error) reports each file as failed instead of aborting; only a lost sign-in aborts. Retries with backoff come with ticket 16, and the queue with bounded concurrency with ticket 17.
 - The same state database also holds the folder-ID cache (see "Uploading a file"), so the folders of a tree are resolved once.

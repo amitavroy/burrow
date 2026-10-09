@@ -90,12 +90,12 @@ Ignored by default: `.git`, `node_modules`, `*.tmp` and `~$*` (editor temp files
 ## Syncing a folder
 
 ```
-bin/syncd sync [--root DIR]   # uploads every file under the root that is not recorded yet
+bin/syncd sync [--root DIR]   # uploads new files and updates changed ones
 ```
 
-The root defaults to `~/MySync`. Each file is uploaded into the Drive folder that mirrors its path, in `rel_path` order, and `sync` prints `uploaded <rel_path>` for each one. The same ignore rules as `scan` apply (see above), so run `scan --dry-run` first to see what would go. Failed files are listed on stderr with a summary (`N uploaded, M already synced, K failed, I ignored`), and the exit code is 1 if any failed.
+The root defaults to `~/MySync`. Each file is uploaded into the Drive folder that mirrors its path, in `rel_path` order, and `sync` prints `uploaded <rel_path>` or `updated <rel_path>` for each one. The same ignore rules as `scan` apply (see above), so run `scan --dry-run` first to see what would go. Failed files are listed on stderr with a summary (`N uploaded, M updated, K already synced, J failed, I ignored`), and the exit code is 1 if any failed.
 
-Every uploaded file gets a row in the state database (see below). A file that already has a row is skipped, so a second run uploads nothing and an interrupted run (Ctrl+C) simply continues where it stopped. For now an edited file is not re-uploaded; that arrives with the MD5 check. The database is disposable: delete `burrow.db` and the next run finds each file in Drive by its path and updates it in place, without duplicates. `sync` needs the database, so it stops with an error if it cannot open.
+Every uploaded file gets a row in the state database (see below). A file whose size and mtime match its row is skipped without being read; otherwise it is hashed (MD5) and skipped if Drive already has that content, or replaced in place (same Drive file ID) if not. So a second run uploads nothing, touching a file uploads nothing, editing one file updates only that file, and an interrupted run (Ctrl+C) continues where it stopped. The database is disposable: delete `burrow.db` and the next run finds each file in Drive by its path and updates it in place, without duplicates. `sync` needs the database, so it stops with an error if it cannot open.
 
 ## State database
 
