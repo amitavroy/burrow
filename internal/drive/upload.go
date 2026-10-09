@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path"
@@ -141,6 +142,7 @@ func (u *Uploader) Upload(ctx context.Context, localPath, relPath string) (FileI
 	if err != nil {
 		return FileInfo{}, sessionError(fmt.Errorf("upload %s: %w", relPath, err))
 	}
+	slog.Debug("drive upload done", "path", relPath, "drive_file_id", out.Id, "updated", existing != nil)
 	return fileInfo(out), nil
 }
 

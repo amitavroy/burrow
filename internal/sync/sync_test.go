@@ -1,12 +1,15 @@
 package sync
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/amitavroy/burrow/internal/drive"
@@ -556,5 +559,48 @@ func TestSyncEmptyRevisionIDStillRecordsTheRow(t *testing.T) {
 	}
 	if revs, _ := repo.Revisions(ctx, "a.txt"); len(revs) != 0 {
 		t.Errorf("revisions = %+v, want none", revs)
+	}
+}
+
+// captureLogs makes slog's default logger write debug-level text to the
+// returned buffer for the rest of the test.
+func captureLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return &buf
+}
+
+func TestSyncLogsPathJobAndDriveFileID(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.txt"), "TOPSECRET")
+	write(t, filepath.Join(root, "b.txt"), "x")
+	repo := openRepo(t)
+	u := &uploads{failOn: map[string]error{"b.txt": errors.New("boom")}}
+	logs := captureLogs(t)
+
+	if _, err := Sync(ctx, root, repo, u.fn, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "a.txt"), "TOPSECRET edited")
+	if _, err := Sync(ctx, root, repo, u.fn, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := logs.String()
+	for _, want := range []string{
+		`msg=uploaded path=a.txt job=1 drive_file_id=id-a.txt`,
+		`msg=updated path=a.txt job=1 drive_file_id=id-a.txt`,
+		`msg="upload failed" path=b.txt job=2`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("logs missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "TOPSECRET") {
+		t.Errorf("logs contain file content:\n%s", out)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"time"
 
@@ -57,10 +58,13 @@ func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc,
 	}
 	sum := Summary{Ignored: res.Ignored, Unreadable: res.Errors}
 
-	for _, e := range res.Entries {
+	for job, e := range res.Entries {
 		if err := ctx.Err(); err != nil {
 			return sum, err
 		}
+		// job numbers the file within this run, until the queue (ticket 17)
+		// provides real job IDs. Only paths and IDs are logged, never content.
+		log := slog.With("path", e.RelPath, "job", job+1)
 		row, err := repo.Get(ctx, e.RelPath)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return sum, err
@@ -73,11 +77,13 @@ func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc,
 			// Same size and mtime: unchanged, no read. Otherwise hash the file:
 			// content Drive already has only needs the row refreshed.
 			if row.Size == e.Size && row.MTime == e.MTime {
+				log.Debug("unchanged, size and mtime match", "drive_file_id", row.DriveFileID)
 				sum.Synced++
 				continue
 			}
 			md5sum, herr := fileMD5(path)
 			if herr != nil {
+				log.Warn("hash failed", "drive_file_id", row.DriveFileID, "err", herr)
 				sum.Failed++
 				report(Event{RelPath: e.RelPath, Err: herr})
 				continue
@@ -86,8 +92,10 @@ func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc,
 			if md5sum == row.SyncedMD5 {
 				row.Size, row.MTime = e.Size, e.MTime
 				if err := repo.Upsert(context.WithoutCancel(ctx), row); err != nil {
+					log.Error("record failed", "drive_file_id", row.DriveFileID, "err", err)
 					return sum, fmt.Errorf("record %s: %w", e.RelPath, err)
 				}
+				log.Info("refreshed row, content unchanged", "drive_file_id", row.DriveFileID)
 				sum.Synced++
 				continue
 			}
@@ -106,19 +114,24 @@ func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc,
 			// only an upload or update moves it.
 			rec.BaseMD5, rec.BaseRevisionID = info.MD5, info.RevisionID
 			if err := record(context.WithoutCancel(ctx), repo, rec, info, e.Size); err != nil {
+				log.Error("record failed", "drive_file_id", info.ID, "err", err)
 				return sum, fmt.Errorf("record %s: %w", e.RelPath, err)
 			}
 			if known {
+				log.Info("updated", "drive_file_id", info.ID, "revision_id", info.RevisionID, "size", e.Size)
 				sum.Updated++
 			} else {
+				log.Info("uploaded", "drive_file_id", info.ID, "revision_id", info.RevisionID, "size", e.Size)
 				sum.Uploaded++
 			}
 			report(Event{RelPath: e.RelPath, Updated: known})
 		case errors.Is(err, drive.ErrNotSignedIn), errors.Is(err, drive.ErrSessionExpired):
+			log.Error("sync aborted, sign-in lost", "err", err)
 			return sum, err
 		case ctx.Err() != nil:
 			return sum, ctx.Err()
 		default:
+			log.Warn("upload failed", "drive_file_id", row.DriveFileID, "err", err)
 			sum.Failed++
 			report(Event{RelPath: e.RelPath, Err: err})
 		}
