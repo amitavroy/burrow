@@ -75,6 +75,8 @@ Every upload is tagged in Drive with its `rel_path`. Without `--root`, `rel_path
 find tree -type f -exec bin/syncd put --root tree {} \;
 ```
 
+Files are streamed in 8 MB chunks, so uploading a multi-gigabyte file does not use more memory than a small one. If a run is killed mid-upload, the file simply uploads again on the next run.
+
 Folder IDs are cached in the state database (see below) so later files in the same folder cost no lookups. The cache is disposable: delete `burrow.db` and the next `put` finds the existing folders again. `stat --path` only reads; it creates nothing in Drive.
 
 ## Scanning

@@ -13,10 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/amitavroy/burrow/internal/store"
 	"golang.org/x/oauth2"
@@ -54,6 +56,10 @@ type uploadDrive struct {
 	ranges   []string
 	received int
 	authz    []string
+
+	// onChunk, when set, runs for every resumable chunk after it is received.
+	// With it set the chunk body is counted and discarded, not buffered.
+	onChunk func(chunk int)
 }
 
 func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -194,12 +200,24 @@ func (f *uploadDrive) multipart(w http.ResponseWriter, r *http.Request) {
 // session accepts upload chunks. A chunk that does not reach the total size
 // gets the 308-override reply like Drive's resumable protocol; the last one gets the file.
 func (f *uploadDrive) session(w http.ResponseWriter, r *http.Request) {
-	body, _ := io.ReadAll(r.Body)
-	f.received += len(body)
 	cr := r.Header.Get("Content-Range")
 	f.ranges = append(f.ranges, cr)
+	if f.onChunk != nil {
+		n, _ := io.Copy(io.Discard, r.Body)
+		f.received += int(n)
+		f.onChunk(len(f.ranges))
+	} else {
+		body, _ := io.ReadAll(r.Body)
+		f.received += len(body)
+	}
 	// "bytes 0-8388607/9437184"
 	var from, to, total int
+	// A file that is an exact multiple of the chunk size ends with an empty
+	// "bytes */total" request, which finalizes the upload.
+	if _, err := fmt.Sscanf(cr, "bytes */%d", &total); err == nil {
+		f.respondFile(w, total)
+		return
+	}
 	if _, err := fmt.Sscanf(cr, "bytes %d-%d/%d", &from, &to, &total); err != nil || to+1 < total {
 		w.Header().Set("Range", fmt.Sprintf("bytes=0-%d", to))
 		// The client sends X-GUploader-No-308, so Drive signals "incomplete"
@@ -729,5 +747,98 @@ func TestUploadCreateFailureIsAnError(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "upload "+rel) {
 			t.Errorf("%s: err = %v, want an upload error", rel, err)
 		}
+	}
+}
+
+// sparseFile makes a file of the given size without writing its bytes.
+func sparseFile(t *testing.T, size int64) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "big.bin")
+	f, err := os.Create(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(size); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// A large upload is streamed in chunks: live heap while it runs stays within a
+// few chunks of where it started, however big the file is.
+func TestUploadLargeFileKeepsMemoryFlat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("uploads 128 MB")
+	}
+	const size = 128 << 20
+	var peak uint64
+	var base uint64
+	fd := &uploadDrive{}
+	fd.onChunk = func(int) {
+		// Collect first, so only live data counts, not garbage waiting for GC.
+		runtime.GC()
+		var m runtime.MemStats
+		runtime.ReadMemStats(&m)
+		if m.HeapAlloc > peak {
+			peak = m.HeapAlloc
+		}
+	}
+	client, extra := setup(t, fd)
+	path := sparseFile(t, size)
+	runtime.GC()
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	base = m.HeapAlloc
+
+	if _, err := Upload(context.Background(), client, signedIn(t, "stored-refresh"), cacheAt(t, "root-id"), nil, path, "big.bin", extra...); err != nil {
+		t.Fatalf("Upload: %v", err)
+	}
+
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	// 16 full chunks, then the empty request that finalizes an exact multiple.
+	if fd.received != size || len(fd.ranges) != size/uploadChunkSize+1 {
+		t.Errorf("received %d bytes in %d requests, want %d in %d", fd.received, len(fd.ranges), size, size/uploadChunkSize+1)
+	}
+	if fd.ranges[0] != "bytes 0-8388607/*" || fd.ranges[len(fd.ranges)-1] != "bytes */134217728" {
+		t.Errorf("Content-Range sequence = %v", fd.ranges)
+	}
+	grew, limit := int64(peak)-int64(base), int64(3*uploadChunkSize)
+	t.Logf("live heap grew by %d bytes (limit %d) uploading %d", grew, limit, size)
+	if grew > limit {
+		t.Errorf("live heap grew by %d bytes during the upload, want at most %d (file is %d)", grew, limit, size)
+	}
+}
+
+// Cancelling during a multi-chunk upload stops it: the call returns the
+// context error and no further chunks are sent.
+func TestUploadCancelledBetweenChunks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	fd := &uploadDrive{}
+	fd.onChunk = func(chunk int) {
+		if chunk == 2 {
+			cancel()
+		}
+	}
+	client, extra := setup(t, fd)
+	path := sparseFile(t, 5*uploadChunkSize)
+
+	start := time.Now()
+	_, err := Upload(ctx, client, signedIn(t, "stored-refresh"), cacheAt(t, "root-id"), nil, path, "big.bin", extra...)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if d := time.Since(start); d > 5*time.Second {
+		t.Errorf("took %v to stop", d)
+	}
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	if len(fd.ranges) > 3 {
+		t.Errorf("%d chunks sent, want the upload to stop right after the cancel", len(fd.ranges))
 	}
 }
