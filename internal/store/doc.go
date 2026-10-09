@@ -3,4 +3,6 @@
 // the returned *sql.DB must be owned by a single goroutine. Repo is that owner
 // for the files table: OpenRepo starts the goroutine, and typed methods
 // (Upsert, Get, GetByDriveID, List, Delete) talk to it over a channel.
+// RecordUpload and Revisions keep the file_revisions history written on each
+// upload.
 package store

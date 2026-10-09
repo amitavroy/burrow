@@ -4,5 +4,6 @@
 // uploads new files through an UploadFunc and records each one's Drive ID in
 // the state database. A recorded file is skipped when its size and mtime or
 // its streamed MD5 match the row, and is replaced in place when its content
-// changed.
+// changed. Each successful upload records the file's base MD5 and Drive
+// revision and a file_revisions entry.
 package sync

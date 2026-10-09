@@ -97,6 +97,14 @@ The root defaults to `~/MySync`. Each file is uploaded into the Drive folder tha
 
 Every uploaded file gets a row in the state database (see below). A file whose size and mtime match its row is skipped without being read; otherwise it is hashed (MD5) and skipped if Drive already has that content, or replaced in place (same Drive file ID) if not. So a second run uploads nothing, touching a file uploads nothing, editing one file updates only that file, and an interrupted run (Ctrl+C) continues where it stopped. The database is disposable: delete `burrow.db` and the next run finds each file in Drive by its path and updates it in place, without duplicates. `sync` needs the database, so it stops with an error if it cannot open.
 
+## Revision history
+
+```
+bin/syncd history <rel_path>   # revisions recorded for a file, newest first
+```
+
+Every upload or update records the Drive revision in the state database. `history` prints one line per revision: time (UTC), revision ID, MD5, size and source. It needs no sign-in. Files uploaded before this feature have no history until their next upload.
+
 ## State database
 
 ```
