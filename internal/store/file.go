@@ -26,3 +26,14 @@ type File struct {
 	BaseMD5        string
 	BaseRevisionID string
 }
+
+// Revision is one Drive revision seen by a successful transfer. Time is Unix
+// nanoseconds; Source is "upload" (or "download" once restore exists).
+type Revision struct {
+	DriveFileID string
+	RevisionID  string
+	MD5         string
+	Size        int64
+	Time        int64
+	Source      string
+}

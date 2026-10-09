@@ -289,7 +289,7 @@ func TestDB(t *testing.T) {
 			if code := run([]string{"db", "status"}, &stdout, &stderr); code != 0 {
 				t.Fatalf("run #%d: code = %d, stderr = %q", i+1, code, stderr.String())
 			}
-			for _, want := range []string{"Path:    " + path, "Version: 2", "files", "folders", "goose_db_version"} {
+			for _, want := range []string{"Path:    " + path, "Version: 3", "files", "folders", "goose_db_version"} {
 				if !strings.Contains(stdout.String(), want) {
 					t.Errorf("run #%d: stdout %q missing %q", i+1, stdout.String(), want)
 				}

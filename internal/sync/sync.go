@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"time"
 
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
@@ -101,7 +102,10 @@ func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc,
 				rec = row
 			}
 			rec.DriveFileID, rec.Size, rec.MTime, rec.SyncedMD5 = info.ID, e.Size, e.MTime, info.MD5
-			if err := repo.Upsert(context.WithoutCancel(ctx), rec); err != nil {
+			// Base is the state after the last successful sync with Drive;
+			// only an upload or update moves it.
+			rec.BaseMD5, rec.BaseRevisionID = info.MD5, info.RevisionID
+			if err := record(context.WithoutCancel(ctx), repo, rec, info, e.Size); err != nil {
 				return sum, fmt.Errorf("record %s: %w", e.RelPath, err)
 			}
 			if known {
@@ -120,4 +124,21 @@ func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc,
 		}
 	}
 	return sum, nil
+}
+
+// record writes the row and, when Drive reported a head revision, its
+// file_revisions entry in one transaction. A missing revision ID (Drive can
+// omit it) still records the row.
+func record(ctx context.Context, repo *store.Repo, rec store.File, info drive.FileInfo, size int64) error {
+	if info.RevisionID == "" {
+		return repo.Upsert(ctx, rec)
+	}
+	return repo.RecordUpload(ctx, rec, store.Revision{
+		DriveFileID: info.ID,
+		RevisionID:  info.RevisionID,
+		MD5:         info.MD5,
+		Size:        size,
+		Time:        time.Now().UnixNano(),
+		Source:      "upload",
+	})
 }

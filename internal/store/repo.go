@@ -120,7 +120,21 @@ func (r *Repo) Close() error {
 // Upsert inserts f or updates the row with the same RelPath.
 func (r *Repo) Upsert(ctx context.Context, f File) error {
 	_, err := call(ctx, r, func(db *sql.DB) (struct{}, error) {
-		_, err := db.Exec(`
+		return struct{}{}, upsertFile(db, f)
+	})
+	if err != nil {
+		return fmt.Errorf("upsert %q: %w", f.RelPath, err)
+	}
+	return nil
+}
+
+// execer is satisfied by *sql.DB and *sql.Tx.
+type execer interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func upsertFile(db execer, f File) error {
+	_, err := db.Exec(`
 INSERT INTO files (rel_path, drive_file_id, size, mtime, inode, local_md5, synced_md5, base_md5, base_revision_id)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(rel_path) DO UPDATE SET
@@ -132,14 +146,70 @@ ON CONFLICT(rel_path) DO UPDATE SET
     synced_md5       = excluded.synced_md5,
     base_md5         = excluded.base_md5,
     base_revision_id = excluded.base_revision_id`,
-			f.RelPath, nullString(f.DriveFileID), f.Size, f.MTime, nullInode(f.Inode),
-			nullString(f.LocalMD5), nullString(f.SyncedMD5), nullString(f.BaseMD5), nullString(f.BaseRevisionID))
-		return struct{}{}, err
+		f.RelPath, nullString(f.DriveFileID), f.Size, f.MTime, nullInode(f.Inode),
+		nullString(f.LocalMD5), nullString(f.SyncedMD5), nullString(f.BaseMD5), nullString(f.BaseRevisionID))
+	return err
+}
+
+// RecordUpload upserts f and inserts rev in one transaction, so a file's base
+// state and its revision history never disagree. A revision already recorded
+// for the same Drive file ID and revision ID is ignored.
+func (r *Repo) RecordUpload(ctx context.Context, f File, rev Revision) error {
+	_, err := call(ctx, r, func(db *sql.DB) (struct{}, error) {
+		tx, err := db.Begin()
+		if err != nil {
+			return struct{}{}, err
+		}
+		defer tx.Rollback()
+		if err := upsertFile(tx, f); err != nil {
+			return struct{}{}, err
+		}
+		if _, err := tx.Exec(`
+INSERT OR IGNORE INTO file_revisions (drive_file_id, revision_id, md5, size, time, source)
+VALUES (?, ?, ?, ?, ?, ?)`,
+			rev.DriveFileID, rev.RevisionID, nullString(rev.MD5), rev.Size, rev.Time, rev.Source); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, tx.Commit()
 	})
 	if err != nil {
-		return fmt.Errorf("upsert %q: %w", f.RelPath, err)
+		return fmt.Errorf("record upload %q: %w", f.RelPath, err)
 	}
 	return nil
+}
+
+// Revisions returns the recorded revisions of the file at relPath, newest
+// first. They follow the Drive file ID, so they survive a rename. A path with
+// no row or no history returns an empty list.
+func (r *Repo) Revisions(ctx context.Context, relPath string) ([]Revision, error) {
+	revs, err := call(ctx, r, func(db *sql.DB) ([]Revision, error) {
+		rows, err := db.Query(`
+SELECT v.drive_file_id, v.revision_id, v.md5, v.size, v.time, v.source
+FROM file_revisions v JOIN files f ON f.drive_file_id = v.drive_file_id
+WHERE f.rel_path = ?
+ORDER BY v.time DESC, v.id DESC`, relPath)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var revs []Revision
+		for rows.Next() {
+			var (
+				v   Revision
+				md5 sql.Null[string]
+			)
+			if err := rows.Scan(&v.DriveFileID, &v.RevisionID, &md5, &v.Size, &v.Time, &v.Source); err != nil {
+				return nil, err
+			}
+			v.MD5 = md5.V
+			revs = append(revs, v)
+		}
+		return revs, rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("revisions %q: %w", relPath, err)
+	}
+	return revs, nil
 }
 
 const fileColumns = `rel_path, drive_file_id, size, mtime, inode, local_md5, synced_md5, base_md5, base_revision_id`

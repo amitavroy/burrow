@@ -30,7 +30,7 @@ func (u *uploads) fn(_ context.Context, localPath, relPath string) (drive.FileIn
 	if err := u.failOn[relPath]; err != nil {
 		return drive.FileInfo{}, err
 	}
-	return drive.FileInfo{ID: "id-" + relPath, MD5: "md5-" + relPath, RelPath: relPath}, nil
+	return drive.FileInfo{ID: "id-" + relPath, MD5: "md5-" + relPath, RevisionID: "rev-" + relPath, RelPath: relPath}, nil
 }
 
 func syncTree(t *testing.T) string {
@@ -197,6 +197,9 @@ func TestSyncRecordsARowPerUpload(t *testing.T) {
 		SyncedMD5:   "md5-a/b.txt",
 		Size:        st.Size(),
 		MTime:       st.ModTime().UnixNano(),
+
+		BaseMD5:        "md5-a/b.txt",
+		BaseRevisionID: "rev-a/b.txt",
 	}
 	if got != want {
 		t.Errorf("row = %+v, want %+v", got, want)
@@ -474,5 +477,84 @@ func TestSyncRowWithoutSyncedMD5IsUpdatedOnce(t *testing.T) {
 
 	if sum.Updated != 1 || len(u.rels) != 1 {
 		t.Errorf("uploaded %v, summary %+v; want one update", u.rels, sum)
+	}
+}
+
+func TestSyncRecordsBaseAndRevisionsAcrossAnUpdate(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.txt"), "one")
+	repo := openRepo(t)
+	rev := "r1"
+	fn := func(_ context.Context, _, rel string) (drive.FileInfo, error) {
+		return drive.FileInfo{ID: "id-" + rel, MD5: "md5-" + rev, RevisionID: rev}, nil
+	}
+	run := func() Summary {
+		t.Helper()
+		sum, err := Sync(ctx, root, repo, fn, func(Event) {})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return sum
+	}
+
+	run()
+	revs, _ := repo.Revisions(ctx, "a.txt")
+	if len(revs) != 1 || revs[0].RevisionID != "r1" || revs[0].Source != "upload" || revs[0].Size != 3 {
+		t.Fatalf("after upload revisions = %+v", revs)
+	}
+
+	// Unchanged rerun: no new revision, base untouched.
+	run()
+	if revs, _ = repo.Revisions(ctx, "a.txt"); len(revs) != 1 {
+		t.Errorf("skip added a revision: %+v", revs)
+	}
+
+	rev = "r2"
+	write(t, filepath.Join(root, "a.txt"), "edited")
+	if sum := run(); sum.Updated != 1 {
+		t.Fatalf("summary = %+v, want 1 updated", sum)
+	}
+	revs, _ = repo.Revisions(ctx, "a.txt")
+	if len(revs) != 2 || revs[0].RevisionID != "r2" {
+		t.Errorf("after update revisions = %+v, want r2 then r1", revs)
+	}
+	row, _ := repo.Get(ctx, "a.txt")
+	if row.BaseRevisionID != "r2" || row.BaseMD5 != "md5-r2" {
+		t.Errorf("base = %q/%q, want r2/md5-r2", row.BaseRevisionID, row.BaseMD5)
+	}
+}
+
+func TestSyncFailedUploadRecordsNoRevision(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.txt"), "x")
+	repo := openRepo(t)
+	u := &uploads{failOn: map[string]error{"a.txt": errors.New("boom")}}
+	if _, err := Sync(ctx, root, repo, u.fn, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if revs, _ := repo.Revisions(ctx, "a.txt"); len(revs) != 0 {
+		t.Errorf("revisions = %+v, want none", revs)
+	}
+}
+
+func TestSyncEmptyRevisionIDStillRecordsTheRow(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.txt"), "x")
+	repo := openRepo(t)
+	fn := func(context.Context, string, string) (drive.FileInfo, error) {
+		return drive.FileInfo{ID: "id", MD5: "m"}, nil
+	}
+	if sum, err := Sync(ctx, root, repo, fn, func(Event) {}); err != nil || sum.Uploaded != 1 || sum.Failed != 0 {
+		t.Fatalf("sum = %+v, err = %v", sum, err)
+	}
+	row, err := repo.Get(ctx, "a.txt")
+	if err != nil || row.DriveFileID != "id" || row.BaseMD5 != "m" || row.BaseRevisionID != "" {
+		t.Errorf("row = %+v, err = %v", row, err)
+	}
+	if revs, _ := repo.Revisions(ctx, "a.txt"); len(revs) != 0 {
+		t.Errorf("revisions = %+v, want none", revs)
 	}
 }

@@ -453,3 +453,69 @@ func TestRepoConcurrentFolders(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+func TestRepoRecordUploadAndRevisions(t *testing.T) {
+	ctx := context.Background()
+	r, _ := openTempRepo(t)
+	f := fullFile()
+	rev := func(id string, at int64) Revision {
+		return Revision{DriveFileID: f.DriveFileID, RevisionID: id, MD5: "m-" + id, Size: 10, Time: at, Source: "upload"}
+	}
+
+	if err := r.RecordUpload(ctx, f, rev("r1", 100)); err != nil {
+		t.Fatalf("RecordUpload r1: %v", err)
+	}
+	f.BaseRevisionID = "r2"
+	if err := r.RecordUpload(ctx, f, rev("r2", 200)); err != nil {
+		t.Fatalf("RecordUpload r2: %v", err)
+	}
+	// Same revision again: ignored, row still updated.
+	if err := r.RecordUpload(ctx, f, rev("r2", 300)); err != nil {
+		t.Fatalf("RecordUpload dup: %v", err)
+	}
+
+	got, err := r.Revisions(ctx, f.RelPath)
+	if err != nil {
+		t.Fatalf("Revisions: %v", err)
+	}
+	want := []Revision{rev("r2", 200), rev("r1", 100)}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Revisions = %+v, want %+v", got, want)
+	}
+	row, _ := r.Get(ctx, f.RelPath)
+	if row.BaseRevisionID != "r2" {
+		t.Errorf("BaseRevisionID = %q, want r2", row.BaseRevisionID)
+	}
+
+	// Renaming the row keeps the history: lookup follows the Drive ID.
+	moved := f
+	moved.RelPath = "docs/b.txt"
+	if err := r.Delete(ctx, f.RelPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Upsert(ctx, moved); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := r.Revisions(ctx, "docs/b.txt"); len(got) != 2 {
+		t.Errorf("after rename got %d revisions, want 2", len(got))
+	}
+	if got, _ := r.Revisions(ctx, "nope"); len(got) != 0 {
+		t.Errorf("unknown path got %d revisions, want 0", len(got))
+	}
+}
+
+func TestRepoRecordUploadIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	r, _ := openTempRepo(t)
+	// failing revision insert: drop the table.
+	if _, err := r.do(ctx, func(db *sql.DB) (any, error) { return db.Exec(`DROP TABLE file_revisions`) }); err != nil {
+		t.Fatal(err)
+	}
+	f := fullFile()
+	if err := r.RecordUpload(ctx, f, Revision{DriveFileID: f.DriveFileID, RevisionID: "r1", Source: "upload"}); err == nil {
+		t.Fatal("RecordUpload succeeded without file_revisions")
+	}
+	if _, err := r.Get(ctx, f.RelPath); !errors.Is(err, ErrNotFound) {
+		t.Errorf("files row written despite failed revision insert: %v", err)
+	}
+}
