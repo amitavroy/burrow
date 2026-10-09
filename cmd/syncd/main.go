@@ -25,7 +25,14 @@ var Version = "dev"
 func main() {
 	// Best-effort: a missing .env is fine, and real environment variables win.
 	_ = godotenv.Load()
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	closeLog, err := setupLogger(os.Getenv("SYNC_LOG"), os.Stderr, store.LogPath())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "syncd: %v\n", err)
+		os.Exit(2)
+	}
+	code := run(os.Args[1:], os.Stdout, os.Stderr)
+	closeLog()
+	os.Exit(code)
 }
 
 // persistToken stores the refresh token from a fresh sign-in. Only the refresh

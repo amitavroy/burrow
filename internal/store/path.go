@@ -15,3 +15,12 @@ const dbFile = "burrow/burrow.db"
 func DefaultPath() string {
 	return filepath.Join(xdg.DataHome, filepath.FromSlash(dbFile))
 }
+
+// logFile is the rotating log under the app data dir, next to the database.
+const logFile = "burrow/logs/syncd.log"
+
+// LogPath returns where syncd writes its log file. Like DefaultPath it only
+// computes the path.
+func LogPath() string {
+	return filepath.Join(xdg.DataHome, filepath.FromSlash(logFile))
+}
