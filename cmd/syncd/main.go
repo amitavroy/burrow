@@ -369,12 +369,16 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "failed %s: %v\n", e.RelPath, e.Err)
 			return
 		}
-		fmt.Fprintf(stdout, "uploaded %s\n", e.RelPath)
+		verb := "uploaded"
+		if e.Updated {
+			verb = "updated"
+		}
+		fmt.Fprintf(stdout, "%s %s\n", verb, e.RelPath)
 	})
 	for _, e := range sum.Unreadable {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
 	}
-	fmt.Fprintf(stderr, "%d uploaded, %d already synced, %d failed, %d ignored\n", sum.Uploaded, sum.Synced, sum.Failed, sum.Ignored)
+	fmt.Fprintf(stderr, "%d uploaded, %d updated, %d already synced, %d failed, %d ignored\n", sum.Uploaded, sum.Updated, sum.Synced, sum.Failed, sum.Ignored)
 	switch {
 	case errors.Is(err, context.Canceled):
 		fmt.Fprintln(stderr, "syncd: sync interrupted")

@@ -211,7 +211,18 @@ func TestSyncSkipsFilesAlreadyRecorded(t *testing.T) {
 	root := syncTree(t)
 	repo := openRepo(t)
 	ctx := context.Background()
-	if err := repo.Upsert(ctx, store.File{RelPath: "a.txt", DriveFileID: "old-id"}); err != nil {
+	// a.txt matches its row exactly, so it is skipped without being read.
+	res, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var a Entry
+	for _, e := range res.Entries {
+		if e.RelPath == "a.txt" {
+			a = e
+		}
+	}
+	if err := repo.Upsert(ctx, store.File{RelPath: "a.txt", DriveFileID: "old-id", Size: a.Size, MTime: a.MTime, SyncedMD5: "bogus"}); err != nil {
 		t.Fatal(err)
 	}
 	// A row with no Drive ID means "not on Drive yet", so it is uploaded.
@@ -228,7 +239,7 @@ func TestSyncSkipsFilesAlreadyRecorded(t *testing.T) {
 	if !reflect.DeepEqual(u.rels, []string{"a/b.txt", "z.txt"}) {
 		t.Errorf("uploaded %v, want a/b.txt and z.txt only", u.rels)
 	}
-	if sum.Uploaded != 2 || sum.Synced != 1 {
+	if sum.Uploaded != 2 || sum.Updated != 0 || sum.Synced != 1 {
 		t.Errorf("summary = %+v, want 2 uploaded, 1 already synced", sum)
 	}
 	if row, _ := repo.Get(ctx, "a.txt"); row.DriveFileID != "old-id" {
@@ -313,5 +324,155 @@ func TestSyncStopsWhenTheDatabaseFails(t *testing.T) {
 	}
 	if len(u.rels) != 0 {
 		t.Errorf("uploaded %v before noticing the database was gone", u.rels)
+	}
+}
+
+const md5OfX = "9dd4e461268c8034f5c8564e155c67a6"
+
+func TestSyncMatchingSizeAndMTimeIsNotHashed(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.txt"), "x")
+	res, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := openRepo(t)
+	ctx := context.Background()
+	// A bogus SyncedMD5 shows the file is never read: a hash would not match it.
+	row := store.File{RelPath: "a.txt", DriveFileID: "id", Size: res.Entries[0].Size, MTime: res.Entries[0].MTime, SyncedMD5: "bogus"}
+	if err := repo.Upsert(ctx, row); err != nil {
+		t.Fatal(err)
+	}
+	u := &uploads{}
+
+	sum, err := Sync(ctx, root, repo, u.fn, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(u.rels) != 0 || sum.Synced != 1 {
+		t.Errorf("uploaded %v, summary %+v; want nothing uploaded, 1 synced", u.rels, sum)
+	}
+	if got, _ := repo.Get(ctx, "a.txt"); got.LocalMD5 != "" {
+		t.Errorf("file was hashed despite matching size and mtime: %+v", got)
+	}
+}
+
+func TestSyncTouchedButIdenticalFileRefreshesItsRow(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.txt"), "x")
+	res, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := openRepo(t)
+	ctx := context.Background()
+	stale := store.File{RelPath: "a.txt", DriveFileID: "id", Size: res.Entries[0].Size, MTime: res.Entries[0].MTime - 1, SyncedMD5: md5OfX}
+	if err := repo.Upsert(ctx, stale); err != nil {
+		t.Fatal(err)
+	}
+	u := &uploads{}
+
+	sum, err := Sync(ctx, root, repo, u.fn, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(u.rels) != 0 || sum.Uploaded != 0 || sum.Synced != 1 {
+		t.Errorf("uploaded %v, summary %+v; want nothing uploaded, 1 synced", u.rels, sum)
+	}
+	got, _ := repo.Get(ctx, "a.txt")
+	if got.MTime != res.Entries[0].MTime || got.LocalMD5 != md5OfX || got.DriveFileID != "id" || got.SyncedMD5 != md5OfX {
+		t.Errorf("row = %+v, want mtime and local md5 refreshed, Drive fields kept", got)
+	}
+}
+
+func TestSyncUploadsOnlyTheEditedFileAsAnUpdate(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"a.txt", "b.txt"} {
+		write(t, filepath.Join(root, rel), "x")
+	}
+	res, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := openRepo(t)
+	ctx := context.Background()
+	for _, e := range res.Entries {
+		row := store.File{RelPath: e.RelPath, DriveFileID: "id-" + e.RelPath, Size: e.Size, MTime: e.MTime, SyncedMD5: md5OfX}
+		if err := repo.Upsert(ctx, row); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(t, filepath.Join(root, "b.txt"), "edited")
+	u := &uploads{}
+	var events []Event
+
+	sum, err := Sync(ctx, root, repo, u.fn, collect(&events))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !reflect.DeepEqual(u.rels, []string{"b.txt"}) {
+		t.Errorf("uploaded %v, want b.txt only", u.rels)
+	}
+	if sum.Uploaded != 0 || sum.Updated != 1 || sum.Synced != 1 {
+		t.Errorf("summary = %+v, want 0 uploaded, 1 updated, 1 synced", sum)
+	}
+	if !reflect.DeepEqual(events, []Event{{RelPath: "b.txt", Updated: true}}) {
+		t.Errorf("events = %+v, want one Updated event for b.txt", events)
+	}
+	row, _ := repo.Get(ctx, "b.txt")
+	if row.DriveFileID != "id-b.txt" || row.SyncedMD5 != "md5-b.txt" || row.Size != int64(len("edited")) || row.LocalMD5 == "" {
+		t.Errorf("row = %+v, want Drive ID kept and size, md5s refreshed", row)
+	}
+}
+
+func TestSyncFailedUpdateKeepsTheOldRow(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.txt"), "x")
+	res, err := Scan(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := openRepo(t)
+	ctx := context.Background()
+	old := store.File{RelPath: "a.txt", DriveFileID: "id", Size: res.Entries[0].Size, MTime: res.Entries[0].MTime, SyncedMD5: md5OfX}
+	if err := repo.Upsert(ctx, old); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(root, "a.txt"), "edited")
+	u := &uploads{failOn: map[string]error{"a.txt": errors.New("boom")}}
+
+	sum, err := Sync(ctx, root, repo, u.fn, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sum.Failed != 1 || sum.Updated != 0 {
+		t.Errorf("summary = %+v, want 1 failed", sum)
+	}
+	if got, _ := repo.Get(ctx, "a.txt"); got != old {
+		t.Errorf("row = %+v, want unchanged %+v", got, old)
+	}
+}
+
+func TestSyncRowWithoutSyncedMD5IsUpdatedOnce(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "a.txt"), "x")
+	repo := openRepo(t)
+	ctx := context.Background()
+	if err := repo.Upsert(ctx, store.File{RelPath: "a.txt", DriveFileID: "id"}); err != nil {
+		t.Fatal(err)
+	}
+	u := &uploads{}
+
+	sum, err := Sync(ctx, root, repo, u.fn, func(Event) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if sum.Updated != 1 || len(u.rels) != 1 {
+		t.Errorf("uploaded %v, summary %+v; want one update", u.rels, sum)
 	}
 }
