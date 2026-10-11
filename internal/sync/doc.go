@@ -17,5 +17,7 @@
 // daemon behind syncd run. Diff and Reconcile compare the root with the files
 // table, so Run queues what changed while it was stopped. Long-lived loops run
 // one iteration at a time under safely, which recovers and logs a panic, and a
-// watch refused by the operating system is reported as ErrWatchLimit.
+// watch refused by the operating system is reported as ErrWatchLimit. Entry and
+// the saved rows carry the file's inode (Unix) or file ID (Windows), read by
+// fileID, for rename detection.
 package sync

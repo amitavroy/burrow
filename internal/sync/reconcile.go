@@ -26,6 +26,10 @@ type Plan struct {
 	// Unreadable are entries the scan could not read; their files are in none
 	// of the lists above.
 	Unreadable []error
+
+	// inodes are unchanged files whose row has no inode or a different one;
+	// Reconcile refreshes them, Diff only reports.
+	inodes map[string]uint64
 }
 
 // Queued is how many files a Reconcile queues.
@@ -65,6 +69,12 @@ func diff(ctx context.Context, root string, repo *store.Repo) (Plan, Result, err
 			plan.Changed = append(plan.Changed, e.RelPath)
 		default:
 			plan.Unchanged++
+			if e.Inode != 0 && row.Inode != e.Inode {
+				if plan.inodes == nil {
+					plan.inodes = map[string]uint64{}
+				}
+				plan.inodes[e.RelPath] = e.Inode
+			}
 		}
 	}
 	// Rows under a folder the scan could not read are not "missing": nobody
@@ -123,6 +133,9 @@ func Reconcile(ctx context.Context, root string, repo *store.Repo) (Plan, error)
 		entries[e.RelPath] = e
 	}
 	if err := noteScanErrors(ctx, root, repo, res, entries); err != nil {
+		return plan, err
+	}
+	if err := repo.SetInodes(ctx, plan.inodes); err != nil {
 		return plan, err
 	}
 	if err := repo.EnqueueJobs(ctx, append(append([]string(nil), plan.New...), plan.Changed...)); err != nil {

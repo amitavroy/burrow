@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -233,12 +234,26 @@ func stat(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("stat", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	byPath := fs.Bool("path", false, "look the file up by its rel_path instead of its Drive ID")
+	local := fs.Bool("local", false, "show only what the state database knows (no sign-in, no Drive call)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(stderr, "usage: syncd stat <file-id> | syncd stat --path <rel_path>")
+		fmt.Fprintln(stderr, "usage: syncd stat [--local] <file-id> | syncd stat [--local] --path <rel_path>")
 		return 2
+	}
+	if *local {
+		row, err := localRow(fs.Arg(0), *byPath)
+		if errors.Is(err, store.ErrNotFound) {
+			fmt.Fprintf(stderr, "syncd: no tracked file %q\n", fs.Arg(0))
+			return 1
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "syncd: stat failed: %v\n", err)
+			return 1
+		}
+		printLocal(stdout, row)
+		return 0
 	}
 
 	client, err := drive.LoadClient()
@@ -264,7 +279,41 @@ func stat(args []string, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "MD5:      %s\n", info.MD5)
 	fmt.Fprintf(stdout, "Revision: %s\n", info.RevisionID)
 	fmt.Fprintf(stdout, "rel_path: %s\n", info.RelPath)
+	// What the state database knows about the same file, if anything.
+	if row, err := localRow(info.ID, false); err == nil {
+		printLocal(stdout, row)
+	} else if !errors.Is(err, store.ErrNotFound) {
+		fmt.Fprintf(stderr, "syncd: local details unavailable: %v\n", err)
+	}
 	return 0
+}
+
+// localRow finds the tracked file in the state database, by rel_path or by
+// Drive file ID. store.ErrNotFound means it is not tracked.
+func localRow(key string, byPath bool) (store.File, error) {
+	repo, err := store.OpenRepo(dbPath())
+	if err != nil {
+		return store.File{}, err
+	}
+	defer repo.Close()
+	if byPath {
+		return repo.Get(context.Background(), key)
+	}
+	return repo.GetByDriveID(context.Background(), key)
+}
+
+// printLocal prints the database row of a tracked file. The inode is the
+// inode on Unix and the file ID on Windows; unknown when it was never recorded.
+func printLocal(w io.Writer, f store.File) {
+	inode := "unknown"
+	if f.Inode != 0 {
+		inode = strconv.FormatUint(f.Inode, 10)
+	}
+	fmt.Fprintln(w, "Local:")
+	fmt.Fprintf(w, "  Inode:      %s\n", inode)
+	fmt.Fprintf(w, "  Size:       %d\n", f.Size)
+	fmt.Fprintf(w, "  MTime:      %s\n", time.Unix(0, f.MTime).UTC().Format(time.RFC3339Nano))
+	fmt.Fprintf(w, "  Synced MD5: %s\n", f.SyncedMD5)
 }
 
 // dbPath locates the state database. Tests replace it so they never touch the

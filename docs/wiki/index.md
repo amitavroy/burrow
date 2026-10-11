@@ -168,7 +168,7 @@ Layout: `rel_path` `a/b/c.txt` lands in `MySync/a/b/` with the name `c.txt`. Dir
 
 ### Stat
 
-`syncd stat <file-id>` uses `files.get`. `syncd stat --path <rel_path>` uses the same tag query as `put` and creates nothing in Drive. Both print ID, name, size, MD5, revision and `rel_path`. A file this app cannot see is reported as not found, because `drive.file` returns 404 for it.
+`syncd stat <file-id>` uses `files.get`. `syncd stat --path <rel_path>` uses the same tag query as `put` and creates nothing in Drive. Both print ID, name, size, MD5, revision and `rel_path`. A file this app cannot see is reported as not found, because `drive.file` returns 404 for it. After the Drive fields, if the state database has a row for the same file, a `Local:` block follows (inode, size, mtime in UTC, synced MD5; see File identity). `--local` skips Drive entirely and prints only that block: no sign-in, no network; a file that is not tracked exits 1 with `no tracked file`.
 
 ## State database
 
@@ -356,6 +356,23 @@ At start the watcher fails with it (a half-watched tree would silently miss chan
 
 **One syncd at a time** (`internal/store/lock.go`). `syncd run` and `syncd sync` take an exclusive non-blocking file lock on `<database>.lock` (in the data directory, never the sync root; `github.com/gofrs/flock`, Unix `flock` and Windows `LockFileEx`) before opening the database. If another holds it: `syncd: another syncd is using this database (run or sync); stop it first`, exit 1. The OS releases the lock when the process exits or crashes, so it is never stale. Read-only commands (`errors`, `history`, `scan`, `watch`, `db`) do not lock and work while a daemon runs; `put` only touches the folder cache and is not locked either.
 
+## File identity
+
+Rename detection (ticket 25) needs to know that the file that vanished from one path is the file that appeared at another. The OS cannot answer that portably after the fact, so each tracked file's identity is stored in `files.inode`:
+
+| OS | Identity | How it is read (`fileID`, `internal/sync/fileid_*.go`) |
+| --- | --- | --- |
+| Linux, macOS, other Unix | inode number | `syscall.Stat_t.Ino` from the `Lstat` the scan already did: free |
+| Windows | NTFS file index (64 bit) | `CreateFile` + `GetFileInformationByHandle`, one syscall pair per file; 0 if the file cannot be opened |
+| anything else | unknown (0) | stub |
+
+- **0 means unknown** and is stored as NULL. Nothing fails because an ID is missing; ticket 25 falls back to the hash alone for such files.
+- **What keeps it:** a rename or move within the filesystem, and an edit. **What changes it:** delete and recreate, a copy, a restore from backup.
+- **Where it is written:** the scan puts it in each `Entry`; `sync` and `run` store it in the row on every upload, update and "content unchanged" refresh (`run` reads it with its `Lstat` at claim time). An unknown ID never erases a known one.
+- **Old and stale rows catch up without any upload:** rows from before this feature have no inode, and a file replaced by a copy with the same size and mtime has a stale one. Whenever a file is judged unchanged (a job's size-and-mtime shortcut, and `Reconcile` at `run` start) a different non-zero inode is written with `SetInode` / `SetInodes` (one transaction). `Diff` (`scan --dry-run --diff`) stays read-only.
+- **Limits:** the inode is unique per filesystem, not globally (device and volume are not stored), so it is only a hint and ticket 25 always confirms with the hash. Two hard links share one inode. ReFS 128-bit IDs are not supported. Directories are not tracked.
+- **See it:** `syncd stat --local --path notes/todo.txt` prints `Inode:` and should equal `ls -i`. `make vet` also vets for `windows` and `darwin`, since the Windows helper cannot run on the development machine.
+
 ## Errors
 
 A file that fails to sync leaves a row in the `sync_errors` table, so the user (and later the tray UI) can read what is wrong without parsing logs. `syncd errors` prints it.
@@ -411,7 +428,7 @@ How to build and check the project locally. There is no CI (see ADR-002), so run
 | Command | What it does |
 | --- | --- |
 | `make build` | Builds `bin/syncd` with `Version` set from `git describe --tags --always --dirty` |
-| `make vet` | `go vet ./...` |
+| `make vet` | `go vet ./...`, plus the same for `GOOS=windows` and `GOOS=darwin` |
 | `make test` | `go test -race ./...` (race detector required) |
 
 ```

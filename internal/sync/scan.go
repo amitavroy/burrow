@@ -16,6 +16,8 @@ type Entry struct {
 	Size    int64
 	// MTime is Unix nanoseconds, same unit as store.File.
 	MTime int64
+	// Inode is the inode (Unix) or file ID (Windows), 0 when unknown.
+	Inode uint64
 }
 
 // Result is what one Scan found.
@@ -89,6 +91,7 @@ func Scan(root string) (Result, error) {
 			RelPath: rel,
 			Size:    info.Size(),
 			MTime:   info.ModTime().UnixNano(),
+			Inode:   fileID(path, info),
 		})
 		return nil
 	})

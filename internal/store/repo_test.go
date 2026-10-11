@@ -519,3 +519,36 @@ func TestRepoRecordUploadIsAtomic(t *testing.T) {
 		t.Errorf("files row written despite failed revision insert: %v", err)
 	}
 }
+
+func TestSetInodesUpdatesRowsInOneCall(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	for _, p := range []string{"a", "b"} {
+		if err := r.Upsert(ctx, File{RelPath: p, Inode: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := r.SetInodes(ctx, map[string]uint64{"a": 100, "b": 0, "missing": 5})
+
+	if err != nil {
+		t.Fatalf("SetInodes: %v (a path with no row must be ignored)", err)
+	}
+	a, _ := r.Get(ctx, "a")
+	b, _ := r.Get(ctx, "b")
+	if a.Inode != 100 || b.Inode != 0 {
+		t.Errorf("a.Inode = %d, b.Inode = %d; want 100 and 0", a.Inode, b.Inode)
+	}
+	if _, err := r.Get(ctx, "missing"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a row appeared for a path that had none: %v", err)
+	}
+	if err := r.SetInodes(ctx, nil); err != nil {
+		t.Errorf("empty map: %v", err)
+	}
+	if err := r.SetInode(ctx, "a", 7); err != nil {
+		t.Fatal(err)
+	}
+	if a, _ := r.Get(ctx, "a"); a.Inode != 7 {
+		t.Errorf("SetInode: %d", a.Inode)
+	}
+}

@@ -67,6 +67,7 @@ The folder ID is cached in `state.json` in the app data dir (`~/.local/share/bur
 bin/syncd put [--root DIR] <file>                # uploads into MySync/ (nested folders mirrored), prints the file ID and link
 bin/syncd stat <file-id>                         # prints ID, name, size, MD5, revision and tags
 bin/syncd stat --path <rel_path>                 # same, found by its rel_path tag instead of ID
+bin/syncd stat --local [--path] <id or rel_path>  # only what the state database knows, incl. the inode; no sign-in
 ```
 
 Every upload is tagged in Drive with its `rel_path`. Without `--root`, `rel_path` is the file's name; with it, the path relative to `--root` (a file outside the root is rejected). Putting a file with the same `rel_path` again updates the existing Drive file instead of making a second one. A file with `rel_path` `a/b/c.txt` is uploaded into `MySync/a/b/`; missing folders are created on the way, and existing ones are reused, never duplicated. To mirror a whole tree for now:
@@ -146,6 +147,6 @@ bin/syncd sync --root tree                  # info lines go to the log file inst
 
 ```
 make build   # builds bin/syncd
-make vet     # go vet ./...
+make vet     # go vet ./... (also for GOOS=windows and darwin)
 make test    # go test -race ./...
 ```

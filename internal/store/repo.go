@@ -151,6 +151,42 @@ ON CONFLICT(rel_path) DO UPDATE SET
 	return err
 }
 
+// SetInode records the inode (or Windows file ID) of the file at relPath. A path
+// with no row is ignored. 0 clears it.
+func (r *Repo) SetInode(ctx context.Context, relPath string, inode uint64) error {
+	return r.SetInodes(ctx, map[string]uint64{relPath: inode})
+}
+
+// SetInodes records several inodes in one transaction. Paths with no row are
+// ignored.
+func (r *Repo) SetInodes(ctx context.Context, inodes map[string]uint64) error {
+	if len(inodes) == 0 {
+		return nil
+	}
+	_, err := call(ctx, r, func(db *sql.DB) (struct{}, error) {
+		tx, err := db.Begin()
+		if err != nil {
+			return struct{}{}, err
+		}
+		defer tx.Rollback()
+		stmt, err := tx.Prepare(`UPDATE files SET inode = ? WHERE rel_path = ?`)
+		if err != nil {
+			return struct{}{}, err
+		}
+		defer stmt.Close()
+		for p, ino := range inodes {
+			if _, err := stmt.Exec(nullInode(ino), p); err != nil {
+				return struct{}{}, err
+			}
+		}
+		return struct{}{}, tx.Commit()
+	})
+	if err != nil {
+		return fmt.Errorf("set inodes: %w", err)
+	}
+	return nil
+}
+
 // RecordUpload upserts f and inserts rev in one transaction, so a file's base
 // state and its revision history never disagree. A revision already recorded
 // for the same Drive file ID and revision ID is ignored.

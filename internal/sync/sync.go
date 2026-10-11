@@ -251,6 +251,12 @@ func process(ctx context.Context, log *slog.Logger, root string, repo *store.Rep
 		// content Drive already has only needs the row refreshed.
 		if row.Size == e.Size && row.MTime == e.MTime {
 			log.Debug("unchanged, size and mtime match", "drive_file_id", row.DriveFileID)
+			// An old row, or a file replaced by a copy, has no or a stale inode.
+			if e.Inode != 0 && row.Inode != e.Inode {
+				if err := repo.SetInode(context.WithoutCancel(ctx), e.RelPath, e.Inode); err != nil {
+					return nil, fmt.Errorf("record %s: %w", e.RelPath, err)
+				}
+			}
 			run.add(func(s *Summary) { s.Synced++ }, nil)
 			return nil, nil
 		}
@@ -263,6 +269,9 @@ func process(ctx context.Context, log *slog.Logger, root string, repo *store.Rep
 		row.LocalMD5 = md5sum
 		if md5sum == row.SyncedMD5 {
 			row.Size, row.MTime = e.Size, e.MTime
+			if e.Inode != 0 {
+				row.Inode = e.Inode
+			}
 			if err := repo.Upsert(context.WithoutCancel(ctx), row); err != nil {
 				log.Error("record failed", "drive_file_id", row.DriveFileID, "err", err)
 				return nil, fmt.Errorf("record %s: %w", e.RelPath, err)
@@ -282,6 +291,9 @@ func process(ctx context.Context, log *slog.Logger, root string, repo *store.Rep
 			rec = row
 		}
 		rec.DriveFileID, rec.Size, rec.MTime, rec.SyncedMD5 = info.ID, e.Size, e.MTime, info.MD5
+		if e.Inode != 0 { // an unknown ID never erases a known one
+			rec.Inode = e.Inode
+		}
 		// Base is the state after the last successful sync with Drive;
 		// only an upload or update moves it.
 		rec.BaseMD5, rec.BaseRevisionID = info.MD5, info.RevisionID

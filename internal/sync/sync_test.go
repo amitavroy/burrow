@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -207,6 +208,7 @@ func TestSyncRecordsARowPerUpload(t *testing.T) {
 
 		BaseMD5:        "md5-a/b.txt",
 		BaseRevisionID: "rev-a/b.txt",
+		Inode:          got.Inode, // the value itself is checked in the per-OS fileID tests
 	}
 	if got != want {
 		t.Errorf("row = %+v, want %+v", got, want)
@@ -913,3 +915,5 @@ func TestSyncDropsErrorRowsForDeletedFiles(t *testing.T) {
 		t.Errorf("errors = %+v", got)
 	}
 }
+
+func slogDiscard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

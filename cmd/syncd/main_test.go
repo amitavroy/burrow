@@ -767,3 +767,47 @@ func TestRunAndSyncRefuseWhenTheDatabaseIsLocked(t *testing.T) {
 	}
 	held.Unlock()
 }
+
+func TestStatLocal(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "burrow.db")
+	oldDB := dbPath
+	dbPath = func() string { return dbFile }
+	t.Cleanup(func() { dbPath = oldDB })
+	repo, err := store.OpenRepo(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Date(2026, 10, 11, 10, 2, 11, 123456789, time.UTC).UnixNano()
+	_ = repo.Upsert(context.Background(), store.File{RelPath: "notes/todo.txt", DriveFileID: "drv-1", Size: 2048, MTime: mt, Inode: 1048713, SyncedMD5: "abc"})
+	_ = repo.Upsert(context.Background(), store.File{RelPath: "old.txt", DriveFileID: "drv-2", Size: 1, MTime: mt}) // row from before inodes
+	repo.Close()
+
+	tests := []struct {
+		name       string
+		args       []string
+		wantCode   int
+		wantStdout []string
+		wantStderr string
+	}{
+		{"by path", []string{"stat", "--local", "--path", "notes/todo.txt"}, 0,
+			[]string{"Local:\n", "  Inode:      1048713\n", "  Size:       2048\n", "  MTime:      2026-10-11T10:02:11.123456789Z\n", "  Synced MD5: abc\n"}, ""},
+		{"by Drive ID", []string{"stat", "--local", "drv-1"}, 0, []string{"Inode:      1048713"}, ""},
+		{"unknown inode", []string{"stat", "--local", "--path", "old.txt"}, 0, []string{"Inode:      unknown"}, ""},
+		{"not tracked", []string{"stat", "--local", "--path", "nope.txt"}, 1, nil, "no tracked file"},
+		{"no argument", []string{"stat", "--local"}, 2, nil, "usage: syncd stat"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(tt.args, &stdout, &stderr)
+			if code != tt.wantCode || !strings.Contains(stderr.String(), tt.wantStderr) {
+				t.Fatalf("code = %d, stderr = %q", code, stderr.String())
+			}
+			for _, want := range tt.wantStdout {
+				if !strings.Contains(stdout.String(), want) {
+					t.Errorf("stdout missing %q:\n%s", want, stdout.String())
+				}
+			}
+		})
+	}
+}

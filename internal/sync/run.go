@@ -185,7 +185,7 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 		if err != nil || !st.Mode().IsRegular() || ignore.Ignored(rel, false) {
 			return Entry{}, false
 		}
-		return Entry{RelPath: rel, Size: st.Size(), MTime: st.ModTime().UnixNano()}, true
+		return Entry{RelPath: rel, Size: st.Size(), MTime: st.ModTime().UnixNano(), Inode: fileID(filepath.Join(root, filepath.FromSlash(rel)), st)}, true
 	}
 	idle := func(ctx context.Context) error {
 		t := time.NewTimer(opts.PollEvery)

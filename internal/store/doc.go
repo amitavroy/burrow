@@ -8,4 +8,6 @@
 // ResetRunningJobs are the persistent job queue (the jobs table) that a sync
 // drains, so interrupted work resumes. RecordError, ClearError and ListErrors
 // keep the sync_errors table: one readable row per file that is failing.
+// SetInode and SetInodes refresh the inode (or Windows file ID) column of rows
+// whose file did not change.
 package store
