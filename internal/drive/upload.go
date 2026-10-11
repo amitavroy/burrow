@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -113,34 +114,46 @@ func (u *Uploader) Upload(ctx context.Context, localPath, relPath string) (FileI
 		return FileInfo{}, fmt.Errorf("%s is a directory", localPath)
 	}
 
-	if err := u.connect(ctx); err != nil {
-		return FileInfo{}, err
-	}
-	existing, err := findByTags(ctx, u.svc, relPath)
-	if err != nil {
-		return FileInfo{}, sessionError(err)
-	}
-
-	tags := map[string]string{tagRelPath: relPath}
-	media := googleapi.ChunkSize(uploadChunkSize)
+	// Each attempt starts from the tag lookup, so a retry after a lost create
+	// response finds the file that was made and updates it, not a duplicate.
 	var out *drv.File
-	if existing != nil {
-		out, err = u.svc.Files.Update(existing.Id, &drv.File{AppProperties: tags}).
-			Media(f, media).Fields(uploadFields).Context(ctx).Do()
-	} else {
-		var dirID string
-		dirID, err = ensureDir(ctx, u.svc, u.folders, u.rootID, path.Dir(relPath))
-		if err != nil {
-			return FileInfo{}, sessionError(err)
+	var existing *drv.File
+	err = withRetry(ctx, func() error {
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind %s: %w", localPath, err)
 		}
-		out, err = u.svc.Files.Create(&drv.File{
-			Name:          path.Base(relPath),
-			Parents:       []string{dirID},
-			AppProperties: tags,
-		}).Media(f, media).Fields(uploadFields).Context(ctx).Do()
-	}
+		if err := u.connect(ctx); err != nil {
+			return err
+		}
+		var err error
+		existing, err = findByTags(ctx, u.svc, relPath)
+		if err != nil {
+			return sessionError(err)
+		}
+		tags := map[string]string{tagRelPath: relPath}
+		media := googleapi.ChunkSize(uploadChunkSize)
+		if existing != nil {
+			out, err = u.svc.Files.Update(existing.Id, &drv.File{AppProperties: tags}).
+				Media(f, media).Fields(uploadFields).Context(ctx).Do()
+		} else {
+			var dirID string
+			dirID, err = ensureDir(ctx, u.svc, u.folders, u.rootID, path.Dir(relPath))
+			if err != nil {
+				return sessionError(err)
+			}
+			out, err = u.svc.Files.Create(&drv.File{
+				Name:          path.Base(relPath),
+				Parents:       []string{dirID},
+				AppProperties: tags,
+			}).Media(f, media).Fields(uploadFields).Context(ctx).Do()
+		}
+		if err != nil {
+			return sessionError(fmt.Errorf("upload %s: %w", relPath, err))
+		}
+		return nil
+	})
 	if err != nil {
-		return FileInfo{}, sessionError(fmt.Errorf("upload %s: %w", relPath, err))
+		return FileInfo{}, err
 	}
 	slog.Debug("drive upload done", "path", relPath, "drive_file_id", out.Id, "updated", existing != nil)
 	return fileInfo(out), nil

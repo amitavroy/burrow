@@ -14,6 +14,7 @@ import (
 
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
+	"google.golang.org/api/googleapi"
 )
 
 // uploads records the calls a fake UploadFunc receives.
@@ -602,5 +603,18 @@ func TestSyncLogsPathJobAndDriveFileID(t *testing.T) {
 	}
 	if strings.Contains(out, "TOPSECRET") {
 		t.Errorf("logs contain file content:\n%s", out)
+	}
+}
+
+// A file whose Drive error survives its retries is a normal per-file failure.
+func TestSyncFileThatFailsAfterRetriesIsAFailure(t *testing.T) {
+	root := syncTree(t)
+	exhausted := fmt.Errorf("upload a/b.txt: %w", &googleapi.Error{Code: 503})
+	u := &uploads{failOn: map[string]error{"a/b.txt": exhausted}}
+
+	sum, err := Sync(context.Background(), root, openRepo(t), u.fn, func(Event) {})
+
+	if err != nil || sum.Uploaded != 2 || sum.Failed != 1 {
+		t.Fatalf("sum=%+v err=%v, want 2 uploaded, 1 failed, no abort", sum, err)
 	}
 }

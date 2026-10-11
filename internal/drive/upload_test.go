@@ -22,6 +22,7 @@ import (
 
 	"github.com/amitavroy/burrow/internal/store"
 	"golang.org/x/oauth2"
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 )
 
@@ -29,6 +30,16 @@ import (
 type fakeDir struct {
 	id, name, parent string
 	trashed          bool
+}
+
+// fakeFail makes the next n (-1: every) requests of kind "lookup" (tag lookup)
+// or "upload" (file content) answer status with a Drive error of the given
+// reason.
+type fakeFail struct {
+	on     string
+	status int
+	reason string
+	n      int
 }
 
 // uploadDrive fakes the Drive routes Upload touches: the token endpoint,
@@ -57,6 +68,12 @@ type uploadDrive struct {
 	received int
 	authz    []string
 
+	// fails are injected Drive errors, consumed in order by requests that match.
+	fails      []fakeFail
+	lookups    int  // tag lookups served (or failed)
+	posts      int  // file creates (POST uploads) that reached Drive
+	lostCreate bool // the next create succeeds in Drive but its reply is a 500
+
 	// onChunk, when set, runs for every resumable chunk after it is received.
 	// With it set the chunk body is counted and discarded, not buffered.
 	onChunk func(chunk int)
@@ -69,6 +86,27 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	if r.URL.Path != "/token" {
 		f.authz = append(f.authz, r.Header.Get("Authorization"))
+	}
+	kind := ""
+	switch {
+	case strings.HasPrefix(path, "/upload/") || strings.HasPrefix(path, "/session/"):
+		kind = "upload"
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/files") && !strings.Contains(r.URL.Query().Get("q"), "mimeType = '"+folderMimeType+"'"):
+		kind = "lookup"
+		f.lookups++
+	}
+	if len(f.fails) > 0 && f.fails[0].on == kind {
+		fl := &f.fails[0]
+		if fl.n > 0 {
+			fl.n--
+		}
+		status, reason := fl.status, fl.reason
+		if fl.n == 0 {
+			f.fails = f.fails[1:]
+		}
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"error":{"code":%d,"message":"injected","errors":[{"reason":%q}]}}`, status, reason)
+		return
 	}
 	switch {
 	case path == "/token":
@@ -174,6 +212,8 @@ func (f *uploadDrive) multipart(w http.ResponseWriter, r *http.Request) {
 	f.method = r.Method
 	if r.Method == http.MethodPatch {
 		f.patchID = r.URL.Path[strings.LastIndex(r.URL.Path, "/")+1:]
+	} else {
+		f.posts++
 	}
 	_, params, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
 	if err != nil {
@@ -194,6 +234,11 @@ func (f *uploadDrive) multipart(w http.ResponseWriter, r *http.Request) {
 	}
 	data, _ := io.ReadAll(content)
 	f.received += len(data)
+	if f.lostCreate && r.Method == http.MethodPost {
+		f.lostCreate, f.existingID = false, "new-file" // Drive made the file; the reply never arrives
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	f.respondFile(w, len(data))
 }
 
@@ -840,5 +885,98 @@ func TestUploadCancelledBetweenChunks(t *testing.T) {
 	defer fd.mu.Unlock()
 	if len(fd.ranges) > 3 {
 		t.Errorf("%d chunks sent, want the upload to stop right after the cancel", len(fd.ranges))
+	}
+}
+
+func uploadOnce(t *testing.T, fd *uploadDrive, size int, rel string) (FileInfo, error) {
+	t.Helper()
+	client, extra := setup(t, fd)
+	return Upload(context.Background(), client, signedIn(t, "r"), cacheAt(t, "root-id"), nil, writeFile(t, size), rel, extra...)
+}
+
+// The ticket checkpoint: 429 then 200 uploads the file once.
+func TestUploadRetries429ThenSucceeds(t *testing.T) {
+	sleeps := stubSleep(t)
+	fd := &uploadDrive{fails: []fakeFail{{on: "upload", status: 429, n: 1}}}
+	info, err := uploadOnce(t, fd, 5, "a.txt")
+	if err != nil || info.ID != "new-file" {
+		t.Fatalf("info=%+v err=%v", info, err)
+	}
+	if *sleeps != 1 || fd.posts != 1 {
+		t.Errorf("sleeps=%d creates=%d, want 1 and 1", *sleeps, fd.posts)
+	}
+}
+
+func TestUploadRetriesTransientErrors(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		fail fakeFail
+		size int
+	}{
+		{"503 on tag lookup", fakeFail{on: "lookup", status: 503, n: 1}, 5},
+		{"403 rateLimitExceeded", fakeFail{on: "lookup", status: 403, reason: "rateLimitExceeded", n: 1}, 5},
+		{"chunked file", fakeFail{on: "upload", status: 503, n: 1}, 9 << 20},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sleeps := stubSleep(t)
+			fd := &uploadDrive{fails: []fakeFail{c.fail}}
+			if _, err := uploadOnce(t, fd, c.size, "a.txt"); err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if *sleeps < 1 && c.size < uploadChunkSize {
+				t.Errorf("sleeps = %d, want a retry", *sleeps)
+			}
+		})
+	}
+}
+
+func TestUploadDoesNotRetryPermissionDenied(t *testing.T) {
+	sleeps := stubSleep(t)
+	fd := &uploadDrive{fails: []fakeFail{{on: "lookup", status: 403, reason: "forbidden", n: -1}}}
+	if _, err := uploadOnce(t, fd, 5, "a.txt"); err == nil {
+		t.Fatal("want an error")
+	}
+	if *sleeps != 0 || fd.lookups != 1 {
+		t.Errorf("sleeps=%d lookups=%d, want no retry", *sleeps, fd.lookups)
+	}
+}
+
+func TestUploadGivesUpAfterFiveAttempts(t *testing.T) {
+	sleeps := stubSleep(t)
+	fd := &uploadDrive{fails: []fakeFail{{on: "lookup", status: 500, n: -1}}}
+	_, err := uploadOnce(t, fd, 5, "a.txt")
+	var ge *googleapi.Error
+	if !errors.As(err, &ge) || ge.Code != 500 {
+		t.Fatalf("err = %v, want the 500", err)
+	}
+	if fd.lookups != retryAttempts || *sleeps != retryAttempts-1 {
+		t.Errorf("lookups=%d sleeps=%d, want %d and %d", fd.lookups, *sleeps, retryAttempts, retryAttempts-1)
+	}
+}
+
+func TestUploadCancelDuringBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	old := retrySleep
+	t.Cleanup(func() { retrySleep = old })
+	retrySleep = func(ctx context.Context, _ time.Duration) error { cancel(); return ctx.Err() }
+	fd := &uploadDrive{fails: []fakeFail{{on: "lookup", status: 503, n: -1}}}
+	client, extra := setup(t, fd)
+	_, err := Upload(ctx, client, signedIn(t, "r"), cacheAt(t, "root-id"), nil, writeFile(t, 5), "a.txt", extra...)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
+// Drive made the file but the reply was lost: the retry finds it by its tag
+// and updates it, so there is one file, not two.
+func TestUploadLostCreateReplyDoesNotDuplicate(t *testing.T) {
+	stubSleep(t)
+	fd := &uploadDrive{lostCreate: true}
+	info, err := uploadOnce(t, fd, 5, "a.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fd.posts != 1 || fd.method != http.MethodPatch || info.ID != "new-file" {
+		t.Errorf("creates=%d method=%s id=%s, want one create then an update", fd.posts, fd.method, info.ID)
 	}
 }

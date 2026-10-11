@@ -4,5 +4,7 @@
 // one Drive service and MySync lookup to send many files. Upload finds an
 // existing file by its rel_path tag and updates it in place, so a changed file
 // keeps its Drive file ID. Content is streamed in 8 MB resumable chunks, so
-// memory use does not grow with file size.
+// memory use does not grow with file size. Upload retries 429, 5xx, rate-limit 403s
+// and transient network errors with jittered exponential backoff (5 attempts);
+// the tag lookup at the start of each attempt keeps a retry from duplicating a file.
 package drive

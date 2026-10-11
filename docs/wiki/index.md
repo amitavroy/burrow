@@ -161,7 +161,7 @@ Layout: `rel_path` `a/b/c.txt` lands in `MySync/a/b/` with the name `c.txt`. Dir
 - Two concurrent uploads could create the same folder twice; duplicates are tolerated (oldest wins). `syncd sync` is sequential, so any single-flight guard belongs with bounded concurrency in ticket 17.
 - Files that fit in one 8 MB chunk go as one multipart request; larger ones use a resumable upload in 8 MB chunks. The file is streamed from disk, never read whole: the Drive client holds one chunk (8 MB) at a time, so memory use does not grow with file size. A test uploads a 128 MB sparse file to the fake Drive and asserts the live heap grows by less than three chunks (it measures about 8.5 MB, and the same for 1 GB). An exact multiple of the chunk size ends with an empty `bytes */total` request, which finalizes the upload.
 - "Resumable" holds within one run: the client retries a chunk on its session URI. The session is not saved, so a killed process starts the file again from byte 0 on the next run; no `files` row is written until an upload succeeds, so nothing is lost. Cancelling (Ctrl+C) stops the upload between chunks and returns the context error, which `syncd sync` treats as an abort, not a failed file.
-- Folders are found by name, parent and mimeType (`trashed = false`), and the oldest wins if Drive holds duplicates. They carry no `appProperties`, because the tree already implies the path. Names are escaped like tag values. Folder rename and delete come with ticket 27, and the MD5 skip and retries with tickets 12 and 16.
+- Folders are found by name, parent and mimeType (`trashed = false`), and the oldest wins if Drive holds duplicates. They carry no `appProperties`, because the tree already implies the path. Names are escaped like tag values. Folder rename and delete come with ticket 27, and the MD5 skip with ticket 12 (retries: see Retries).
 - Requested fields: `id,name,md5Checksum,size,headRevisionId,appProperties,webViewLink`.
 - Same exit-1 hints as `whoami` when not signed in or the session expired. Usage errors exit 2.
 - Code: `drive.Upload`, `drive.Stat`, `drive.FindByTags`, `drive.FileInfo`, `ErrFileNotFound`, `ensureDir` (`internal/drive/upload.go`); the cached-folder check is `folderUsable` (`root.go`). Service setup is shared through `serviceFromStore` (`root.go`), and the oldest-match list query behind `FindByTags` and the root lookup is `oldestMatch` (`upload.go`). Each operation is one exported function that takes a `drive.Client`; tests point its optional `Endpoint` at a fake OAuth server. `drive.Upload` is `NewUploader(...).Upload(...)` for one call; `drive.Uploader` keeps the Drive service and `MySync` ID so many files share them (see "One-shot sync").
@@ -244,6 +244,18 @@ syncd sync [--root DIR]                 (root defaults to ~/MySync; usage error 
 - `syncd history <rel_path>` prints the recorded revisions newest first, one per line: time (UTC), revision ID, MD5, size, source. It reads the database only (no sign-in), and exits 1 with a message when nothing is recorded for the path. Drive prunes old revisions on its own schedule, so the local rows are the durable record.
 - The same state database also holds the folder-ID cache (see "Uploading a file"), so the folders of a tree are resolved once.
 - Code: `sync.Sync`, `UploadFunc`, `Event`, `Summary` (`internal/sync/sync.go`); `drive.Uploader` and `NewUploader` (`internal/drive/upload.go`); the `sync` command in `cmd/syncd/main.go`. `Sync` takes the upload as a function, so the engine is tested with a fake and no HTTP.
+
+## Retries
+
+Every file's Drive work (connect, tag lookup, folder creation, create or update) runs inside `withRetry` (`internal/drive/retry.go`), called from `Uploader.Upload`.
+
+- **Retried:** HTTP 429, any 5xx, 403 whose reason is `rateLimitExceeded`, `userRateLimitExceeded` or `sharingRateLimitExceeded`, and transient network errors (timeout, connection reset or refused, unexpected EOF).
+- **Not retried:** any other 403 (permission, `storageQuotaExceeded`), 404, 401, `invalid_grant` sign-in errors, and a cancelled context. Waiting would not fix these, and the user should see them.
+- **Backoff:** full jitter under a ceiling of 1 s that doubles to a 30 s cap; `Retry-After` is honoured when it asks for longer. 5 attempts in all, so a file waits roughly a minute at worst before it fails. Cancelling (Ctrl+C) ends the wait at once.
+- **Idempotent:** each attempt starts with the `rel_path` tag lookup and seeks the file back to the start. If a create succeeded but its reply was lost, the retry finds the tagged file and updates it, so there is no duplicate.
+- **Logging:** each retry is one warn line with `attempt`, `delay` and `err`.
+- A file that still fails after its retries is an ordinary per-file failure in `syncd sync`; a sign-in error still aborts the run.
+- The Drive client's own chunk retry for large files stacks with this one (longer worst case, never wrong). `Stat`, `FindByTags` and `EnsureRoot` called alone are not retried. Run-wide throttling comes with ticket 17.
 
 ## Logging
 
