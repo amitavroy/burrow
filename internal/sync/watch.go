@@ -46,6 +46,9 @@ type Watcher struct {
 	events chan WatchEvent
 	errs   chan error
 
+	add           func(path string) error // fw.Add, wrapped by tests
+	limitReported bool                    // the loop reports the watch limit once
+
 	dirs map[string]struct{} // watched directories (absolute); touched only before the loop starts and by the loop
 	n    atomic.Int32        // len(dirs), readable from any goroutine
 
@@ -57,7 +60,10 @@ type Watcher struct {
 // NewWatcher watches root and every directory below it, and starts reporting.
 // It fails if the root cannot be read or a directory cannot be watched (the
 // error names it). Call Close when done.
-func NewWatcher(root string) (*Watcher, error) {
+func NewWatcher(root string) (*Watcher, error) { return newWatcherWithHook(root, nil) }
+
+// newWatcherWithHook is NewWatcher with a hook around fsnotify's Add, for tests.
+func newWatcherWithHook(root string, addHook func(path string, add func(string) error) error) (*Watcher, error) {
 	abs, err := filepath.Abs(root)
 	if err != nil {
 		return nil, fmt.Errorf("watch root: %w", err)
@@ -82,6 +88,10 @@ func NewWatcher(root string) (*Watcher, error) {
 		dirs:   map[string]struct{}{},
 		done:   make(chan struct{}),
 		exited: make(chan struct{}),
+	}
+	w.add = fw.Add
+	if addHook != nil {
+		w.add = func(p string) error { return addHook(p, fw.Add) }
 	}
 	if err := w.addTree(abs, false); err != nil {
 		fw.Close()
@@ -125,7 +135,7 @@ func (w *Watcher) loop() {
 			if !ok {
 				return
 			}
-			w.handle(ev)
+			safely("watcher.event", func() { w.handle(ev) })
 		case err, ok := <-w.fw.Errors:
 			if !ok {
 				return
@@ -200,6 +210,12 @@ func (w *Watcher) handle(ev fsnotify.Event) {
 func (w *Watcher) watchNewDir(dir string) {
 	if err := w.addTree(dir, true); err != nil {
 		slog.Warn("cannot watch new directory", "dir", dir, "err", err)
+		if errors.Is(err, ErrWatchLimit) {
+			if w.limitReported { // one report is enough; every later folder fails the same way
+				return
+			}
+			w.limitReported = true
+		}
 		select {
 		case w.errs <- err:
 		default:
@@ -234,9 +250,12 @@ func (w *Watcher) addTree(dir string, report bool) error {
 		if _, dup := w.dirs[path]; dup {
 			return nil
 		}
-		if err := w.fw.Add(path); err != nil {
+		if err := w.add(path); err != nil {
 			if errors.Is(err, fs.ErrNotExist) {
 				return fs.SkipDir
+			}
+			if lerr := watchLimitError(err, path, len(w.dirs)); lerr != err {
+				return lerr
 			}
 			return fmt.Errorf("watch %s: %w", path, err)
 		}

@@ -6,6 +6,7 @@ require (
 	github.com/adrg/xdg v0.5.3
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-git/go-git/v5 v5.19.3
+	github.com/gofrs/flock v0.13.1
 	github.com/joho/godotenv v1.5.1
 	github.com/pressly/goose/v3 v3.28.0
 	github.com/zalando/go-keyring v0.2.8

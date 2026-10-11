@@ -327,7 +327,34 @@ syncd: stopped; unfinished uploads stay queued
 - **Lost sign-in** stops the run (the workers cannot make progress): in-flight jobs are requeued and `syncd run` exits 1 with the same hint as `sync`. Other errors from the database also stop it.
 - **Watcher problems** (a queue overflow, a folder that could not be watched) are logged and printed on stderr, and the run goes on. Missed events are recovered by the next start's reconcile.
 - **Ctrl+C** cancels the uploads in flight; they resume from the start next time (resumable sessions are not persisted). Exit code 0.
-- **Limits:** only one `syncd` process may use the database at a time (not enforced; `run` and `sync` together would reset each other's running jobs; tracked with ticket 23). Renames and deletes are not propagated: a rename uploads the new name and leaves the old file in Drive (ticket 25), a delete leaves the Drive file (ticket 26).
+- **Limits:** only one `syncd` may run jobs against a database at a time; this is enforced by a lock (see Hardening). Renames and deletes are not propagated: a rename uploads the new name and leaves the old file in Drive (ticket 25), a delete leaves the Drive file (ticket 26).
+
+## Hardening
+
+Three things keep `syncd run` up and safe for days.
+
+**Panics are recovered and logged** (`internal/sync/safe.go`). `safely(name, fn)` runs one unit of work and recovers a panic in it, logging `panic recovered` at error level with the goroutine name (`worker`, `watcher.event`, `debouncer.event`, `debouncer.fire`, `run.feeder`, `run.retry`, `run.watch-errors`, `report`), the panic value, the stack, and the `path` and `job` where known. Every long-lived loop wraps one iteration in it, so a bug costs that event, tick or job and not the daemon.
+
+| Where the panic happens | What happens |
+| --- | --- |
+| a worker, while processing or recording a job (an upload bug, a `report` callback) | the job is marked `failed`, an error row `internal error (see log)` appears in `syncd errors`, a `failed <path>: internal error` line is printed, the worker takes the next job; the 5-minute retry tries it again |
+| the watcher or debouncer loop | that one event or timer fire is lost; the loop carries on (a lost debounce entry is dropped and starts again on the next event) |
+| the feeder, retry ticker or watcher-error pump in `Run` | that one iteration is lost |
+| the main goroutine (`syncd` itself) | logged with the stack, `syncd: internal error: ... (see the log)`, exit 1; nothing is left to keep running |
+
+The log never contains file contents (stack traces show function names and addresses). A file that panics every time costs one log entry per retry; there is no retry cap. Tests force panics through a `testPanic` seam that is nil in production, not through a debug flag.
+
+**A clear message when inotify runs out** (`internal/sync/watchlimit.go`). On Linux, adding a watch fails with `ENOSPC` once `fs.inotify.max_user_watches` is used up (`EMFILE` for `max_user_instances`). That becomes `ErrWatchLimit` with the directory, how many directories were watched before it, the current limit read from `/proc`, and the fix:
+
+```
+syncd: watch failed: inotify watch limit reached: cannot watch /data/vendor/x after 8192 directories (fs.inotify.max_user_watches=8192)
+  raise it with:  sudo sysctl fs.inotify.max_user_watches=524288
+  and keep it after a reboot with:  echo 'fs.inotify.max_user_watches=524288' | sudo tee /etc/sysctl.d/60-burrow.conf
+```
+
+At start the watcher fails with it (a half-watched tree would silently miss changes), so `syncd watch` and `syncd run` exit 1. While running, a new folder that cannot be watched is reported once (stderr and the log) and the run goes on; the next start's reconcile finds the files in it. On other systems `ENOSPC` means a full disk and is left alone.
+
+**One syncd at a time** (`internal/store/lock.go`). `syncd run` and `syncd sync` take an exclusive non-blocking file lock on `<database>.lock` (in the data directory, never the sync root; `github.com/gofrs/flock`, Unix `flock` and Windows `LockFileEx`) before opening the database. If another holds it: `syncd: another syncd is using this database (run or sync); stop it first`, exit 1. The OS releases the lock when the process exits or crashes, so it is never stale. Read-only commands (`errors`, `history`, `scan`, `watch`, `db`) do not lock and work while a daemon runs; `put` only touches the folder cache and is not locked either.
 
 ## Errors
 

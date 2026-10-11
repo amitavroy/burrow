@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -31,9 +32,24 @@ func main() {
 		fmt.Fprintf(os.Stderr, "syncd: %v\n", err)
 		os.Exit(2)
 	}
-	code := run(os.Args[1:], os.Stdout, os.Stderr)
+	code := guarded(os.Stderr, func() int { return run(os.Args[1:], os.Stdout, os.Stderr) })
 	closeLog()
 	os.Exit(code)
+}
+
+// guarded runs fn with a last-resort recover: a panic that reaches the main
+// goroutine is logged (with its stack) and the command ends with exit 1.
+// Goroutines started by the commands recover their own panics (see
+// internal/sync), so this is only for bugs in the command code itself.
+func guarded(stderr io.Writer, fn func() int) (code int) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("panic in main goroutine", "panic", fmt.Sprint(r), "stack", string(debug.Stack()))
+			fmt.Fprintf(stderr, "syncd: internal error: %v (see the log)\n", r)
+			code = 1
+		}
+	}()
+	return fn()
 }
 
 // persistToken stores the refresh token from a fresh sign-in. Only the refresh
@@ -345,6 +361,22 @@ func resolveRoot(dir string) (string, error) {
 	return filepath.Join(home, "MySync"), nil
 }
 
+// lockDatabase takes the single-instance lock that run and sync need, so two
+// of them never work on the same database at once. On failure it has already
+// printed why and the caller exits 1.
+func lockDatabase(cmd string, stderr io.Writer) (*store.FileLock, bool) {
+	l, err := store.Lock(dbPath())
+	switch {
+	case errors.Is(err, store.ErrLocked):
+		fmt.Fprintln(stderr, "syncd: another syncd is using this database (run or sync); stop it first")
+		return nil, false
+	case err != nil:
+		fmt.Fprintf(stderr, "syncd: %s failed: %v\n", cmd, err)
+		return nil, false
+	}
+	return l, true
+}
+
 // reportEvent prints one upload outcome: uploaded and updated lines on stdout,
 // failures on stderr.
 func reportEvent(stdout, stderr io.Writer) func(burrowsync.Event) {
@@ -387,6 +419,11 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "syncd: %v\n", err)
 		return 1
 	}
+	lock, ok := lockDatabase("run", stderr)
+	if !ok {
+		return 1
+	}
+	defer lock.Unlock()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	repo, err := store.OpenRepo(dbPath())
@@ -494,6 +531,11 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "syncd: %v\n", err)
 		return 1
 	}
+	lock, ok := lockDatabase("sync", stderr)
+	if !ok {
+		return 1
+	}
+	defer lock.Unlock()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 

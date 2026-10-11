@@ -121,11 +121,13 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 				if !ok {
 					return
 				}
-				if err := repo.EnqueueJobs(ctx, []string{p}); err != nil {
-					stop(err)
-					return
-				}
-				kick(1)
+				safely("run.feeder", func() {
+					if err := repo.EnqueueJobs(ctx, []string{p}); err != nil {
+						stop(err)
+						return
+					}
+					kick(1)
+				}, "path", p)
 			}
 		}
 	}()
@@ -141,15 +143,17 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				n, err := repo.RetryFailedJobs(ctx)
-				if err != nil {
-					stop(err)
-					return
-				}
-				if n > 0 {
-					slog.Info("retrying failed jobs", "count", n)
-					kick(n)
-				}
+				safely("run.retry", func() {
+					n, err := repo.RetryFailedJobs(ctx)
+					if err != nil {
+						stop(err)
+						return
+					}
+					if n > 0 {
+						slog.Info("retrying failed jobs", "count", n)
+						kick(n)
+					}
+				})
 			}
 		}
 	}()
@@ -166,10 +170,12 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 				if !ok {
 					return
 				}
-				slog.Warn("watcher problem", "err", err)
-				if opts.OnWatchError != nil {
-					opts.OnWatchError(err)
-				}
+				safely("run.watch-errors", func() {
+					slog.Warn("watcher problem", "err", err)
+					if opts.OnWatchError != nil {
+						opts.OnWatchError(err)
+					}
+				})
 			}
 		}
 	}()

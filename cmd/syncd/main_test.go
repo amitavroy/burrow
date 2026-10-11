@@ -727,3 +727,43 @@ func TestReportReconcile(t *testing.T) {
 		t.Errorf("output = %q", got)
 	}
 }
+
+func TestGuardedTurnsAPanicIntoExit1(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := guarded(&stderr, func() int { panic("kaboom") }); code != 1 || !strings.Contains(stderr.String(), "internal error: kaboom") {
+		t.Errorf("code = %d, stderr = %q", code, stderr.String())
+	}
+	if code := guarded(&stderr, func() int { return 3 }); code != 3 {
+		t.Errorf("a normal return must pass through, got %d", code)
+	}
+}
+
+// run and sync refuse to start while another syncd holds the database lock,
+// before they touch Drive.
+func TestRunAndSyncRefuseWhenTheDatabaseIsLocked(t *testing.T) {
+	dbFile := filepath.Join(t.TempDir(), "burrow.db")
+	oldDB := dbPath
+	dbPath = func() string { return dbFile }
+	t.Cleanup(func() { dbPath = oldDB })
+	t.Setenv("BURROW_GOOGLE_CLIENT_ID", "id")
+	t.Setenv("BURROW_GOOGLE_CLIENT_SECRET", "secret")
+	held, err := store.Lock(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, cmd := range []string{"run", "sync"} {
+		var stdout, stderr bytes.Buffer
+		code := run([]string{cmd, "--root", t.TempDir()}, &stdout, &stderr)
+		if code != 1 || !strings.Contains(stderr.String(), "another syncd is using this database") {
+			t.Errorf("%s: code = %d, stderr = %q", cmd, code, stderr.String())
+		}
+	}
+
+	// Read-only commands are not blocked.
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"errors"}, &stdout, &stderr); code != 0 {
+		t.Errorf("errors while locked: code = %d, stderr = %q", code, stderr.String())
+	}
+	held.Unlock()
+}

@@ -15,5 +15,7 @@
 // and mtime have stopped changing, so an editor save is one job. Run joins
 // Watcher, Debouncer, the job queue and the workers into the foreground
 // daemon behind syncd run. Diff and Reconcile compare the root with the files
-// table, so Run queues what changed while it was stopped.
+// table, so Run queues what changed while it was stopped. Long-lived loops run
+// one iteration at a time under safely, which recovers and logs a panic, and a
+// watch refused by the operating system is reported as ErrWatchLimit.
 package sync

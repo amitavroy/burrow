@@ -301,7 +301,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 20 | M4 Live watching | Debounce and stabilize | Per-path timers; enqueue only when size and mtime are stable | One editor save produces one queued job | 19 | => Done
 | 21 | M4 Live watching | Foreground daemon | `syncd run`: watcher to queue to worker, graceful shutdown on Ctrl+C | A saved file appears in Drive within a minute | 17, 20 | => Done
 | 22 | M4 Live watching | Startup reconciliation | On launch, walk the root, diff against the DB, enqueue differences | **Checkpoint:** files changed while stopped sync on next start | 21 | => Done
-| 23 | M4 Live watching | Hardening | Panic recovery in every goroutine; clear error on `max_user_watches` | A forced panic is logged and the daemon keeps running | 21 |
+| 23 | M4 Live watching | Hardening | Panic recovery in every goroutine; clear error on `max_user_watches` | A forced panic is logged and the daemon keeps running | 21 | => Done
 | 24 | M5 Rename and delete | Inode / file ID tracking | Per-OS helper for inode (Unix) or file ID (Windows); store it in the DB | `syncd stat` shows the inode for a tracked file | 8 |
 | 25 | M5 Rename and delete | Rename and move | Match inode and hash; `files.update` with `addParents` / `removeParents` | A renamed file keeps its Drive file ID; nothing is re-uploaded | 21, 24 |
 | 26 | M5 Rename and delete | Delete to trash | Local delete sets `trashed: true` in Drive | **Checkpoint:** a deleted file sits in the Drive trash | 21 |

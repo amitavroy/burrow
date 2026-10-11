@@ -89,9 +89,11 @@ func (d *Debouncer) loop() {
 			if !ok {
 				return
 			}
-			d.onEvent(e)
+			safely("debouncer.event", func() { d.onEvent(e) })
 		case f := <-d.fires:
-			d.onFire(f)
+			if safely("debouncer.fire", func() { d.onFire(f) }) {
+				delete(d.pending, f.path) // its timer has fired; a later event starts it again
+			}
 		}
 	}
 }

@@ -190,25 +190,49 @@ func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFun
 			}
 			continue
 		}
-		fileErr, fatal := process(ctx, slog.With("path", e.RelPath, "job", job.ID), root, repo, upload, run, e)
-		switch {
-		case fatal != nil:
-			if err := repo.RequeueJob(bg, job.ID); err != nil {
-				slog.Error("requeue failed", "job", job.ID, "err", err)
-			}
-			return fatal
-		case fileErr != nil:
-			err = errors.Join(
-				repo.FailJob(bg, job.ID, fileErr.Error()),
-				repo.RecordError(bg, job.RelPath, drive.Describe(fileErr), fileErr.Error()),
-			)
-		default:
-			err = errors.Join(repo.CompleteJob(bg, job.ID), repo.ClearError(bg, job.RelPath))
+		var out error // an error that must stop the worker
+		panicked := safely("worker", func() {
+			out = runJob(ctx, bg, root, repo, upload, run, job, e)
+		}, "path", job.RelPath, "job", job.ID)
+		if panicked {
+			out = failPanicked(bg, repo, run, job)
 		}
-		if err != nil {
-			return err
+		if out != nil {
+			return out
 		}
 	}
+}
+
+// runJob processes one claimed job and records its outcome. The returned error
+// must stop the worker (a fatal error from process, or the database failing).
+func runJob(ctx, bg context.Context, root string, repo *store.Repo, upload UploadFunc, run *runState, job store.Job, e Entry) error {
+	fileErr, fatal := process(ctx, slog.With("path", e.RelPath, "job", job.ID), root, repo, upload, run, e)
+	switch {
+	case fatal != nil:
+		if err := repo.RequeueJob(bg, job.ID); err != nil {
+			slog.Error("requeue failed", "job", job.ID, "err", err)
+		}
+		return fatal
+	case fileErr != nil:
+		return errors.Join(
+			repo.FailJob(bg, job.ID, fileErr.Error()),
+			repo.RecordError(bg, job.RelPath, drive.Describe(fileErr), fileErr.Error()),
+		)
+	}
+	return errors.Join(repo.CompleteJob(bg, job.ID), repo.ClearError(bg, job.RelPath))
+}
+
+// failPanicked records a job whose processing panicked as an ordinary failed
+// file, so the worker can take the next job.
+func failPanicked(bg context.Context, repo *store.Repo, run *runState, job store.Job) error {
+	const msg = "internal error (see log)"
+	safely("report", func() {
+		run.add(func(s *Summary) { s.Failed++ }, &Event{RelPath: job.RelPath, Err: errors.New("internal error")})
+	})
+	return errors.Join(
+		repo.FailJob(bg, job.ID, msg),
+		repo.RecordError(bg, job.RelPath, msg, msg),
+	)
 }
 
 // process does the work of one job. A per-file problem comes back as fileErr
