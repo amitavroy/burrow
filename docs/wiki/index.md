@@ -567,5 +567,21 @@ for each remote file at <root>/<rel_path>:
 - **Output:** `downloaded <path>`, `matched <path>`, `conflict <path> (your version kept as <copy>)` on stdout, `failed <path>: <why>` on stderr, then `N downloaded, M already there, K kept as conflicted copies, F failed`. Exit 1 if any failed (run it again; finished files are `matched`), if interrupted, or when the sign-in is lost.
 - **Safe to repeat:** a second restore finds every file matching and transfers nothing.
 - **Single process:** like `run` and `sync` it takes the database lock.
-- **Not done:** no parallel downloads, no restore of modification times (the row holds the time the file was written, which is what the scan compares), and the rebuild-and-compare end-to-end test is ticket 32.
+- **Not done:** no parallel downloads, no restore of modification times (the row holds the time the file was written, which is what the scan compares), and the rebuild guarantee is tested end to end (see Rebuild from Drive).
+
+## Rebuild from Drive
+
+The checkpoint of the restore work: the database is a disposable cache, so deleting it loses nothing and costs no re-upload. This is a test (`internal/sync/rebuild_test.go`), not a command.
+
+```
+sync a tree -> new empty database ("delete the DB")
+  control:  sync now would upload every file          (why the restore is needed)
+  restore:  every local file matches Drive -> rows only, 0 downloads
+  sync:     0 uploaded, 0 updated, 0 moved, 0 trashed, N already synced; Drive untouched
+```
+
+- **What it runs:** the real `SyncWorkers` and `Restore` against an in-memory Drive (`memDrive`) that keeps content by Drive ID, replaces content on a repeated `rel_path` like the real uploader, lists its files with real MD5s, and serves downloads. The HTTP layer is covered separately by the Drive package tests, so this test pins the behavior between the pieces.
+- **Three cases:** (1) database deleted, local folder intact: all files `matched`, then the sync does nothing and Drive sees no upload or trash; (2) database and local folder both gone: everything is downloaded, then the sync does nothing; (3) a file edited while the database was gone: Drive's version takes the path, the edit survives in the conflicted copy, and the next sync uploads exactly that copy and nothing else.
+- **Why it holds:** restore writes the same row an upload would (Drive ID, size, mtime, inode, MD5s, base revision), so reconcile and the sync's size-and-mtime check see "unchanged".
+- **Not covered:** a real Drive and the OS keychain; run `syncd restore` and then `syncd sync` by hand against a test account for that.
 
