@@ -112,14 +112,15 @@ func TestServiceInstallAndUninstallOnLinux(t *testing.T) {
 	f := useFakeOS(t, "linux")
 	f.withEnv(t)
 	var out, errb bytes.Buffer
+	root := t.TempDir()
 
-	if code := serviceCmd([]string{"install", "--root", "/data/Sync"}, &out, &errb); code != 0 {
+	if code := serviceCmd([]string{"install", "--root", root}, &out, &errb); code != 0 {
 		t.Fatalf("install: code %d, stderr %q", code, errb.String())
 	}
 
 	unit := filepath.Join(f.config, "systemd", "user", "syncd.service")
 	b, err := os.ReadFile(unit)
-	if err != nil || !strings.Contains(string(b), `ExecStart="/opt/syncd" run --root "/data/Sync"`) || !strings.Contains(string(b), "WorkingDirectory="+f.cwd) {
+	if err != nil || !strings.Contains(string(b), `ExecStart="/opt/syncd" run --root "`+root+`"`) || !strings.Contains(string(b), "WorkingDirectory="+f.cwd) {
 		t.Fatalf("unit = %q, %v", b, err)
 	}
 	if got := strings.Join(f.cmds, "|"); got != "systemctl --user daemon-reload|systemctl --user enable --now syncd.service" {
@@ -155,15 +156,53 @@ func TestServiceInstallAndUninstallOnLinux(t *testing.T) {
 	}
 }
 
+func TestServiceInstallCreatesAMissingRootAndKeepsAnExistingOne(t *testing.T) {
+	f := useFakeOS(t, "linux")
+	f.withEnv(t)
+	var out, errb bytes.Buffer
+	root := filepath.Join(t.TempDir(), "new", "MySync")
+
+	if code := serviceCmd([]string{"install", "--root", root}, &out, &errb); code != 0 {
+		t.Fatalf("code %d, stderr %q", code, errb.String())
+	}
+	if st, err := os.Stat(root); err != nil || !st.IsDir() {
+		t.Errorf("root not created: %v", err)
+	}
+	if !strings.Contains(out.String(), "created "+root) {
+		t.Errorf("stdout = %q, want a 'created' line", out.String())
+	}
+
+	// An existing folder, with content, is left alone and not announced.
+	if err := os.WriteFile(filepath.Join(root, "keep.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := serviceCmd([]string{"install", "--root", root}, &out, &errb); code != 0 || strings.Contains(out.String(), "created") {
+		t.Errorf("second install: code %d, stdout %q", code, out.String())
+	}
+	if _, err := os.Stat(filepath.Join(root, "keep.txt")); err != nil {
+		t.Error("existing content touched")
+	}
+
+	// A file where the root should be is an error, and nothing is registered.
+	file := filepath.Join(t.TempDir(), "afile")
+	_ = os.WriteFile(file, []byte("x"), 0o644)
+	f.cmds, errb = nil, bytes.Buffer{}
+	if code := serviceCmd([]string{"install", "--root", filepath.Join(file, "sub")}, &out, &errb); code != 1 || len(f.cmds) != 0 {
+		t.Errorf("root under a file: code %d, commands %v, stderr %q", code, f.cmds, errb.String())
+	}
+}
+
 func TestServiceInstallOnMacAndWindows(t *testing.T) {
 	f := useFakeOS(t, "darwin")
 	f.withEnv(t)
 	var out, errb bytes.Buffer
-	if code := serviceCmd([]string{"install", "--root", "/Users/me/MySync"}, &out, &errb); code != 0 {
+	macRoot := t.TempDir()
+	if code := serviceCmd([]string{"install", "--root", macRoot}, &out, &errb); code != 0 {
 		t.Fatalf("darwin install: %d %q", code, errb.String())
 	}
 	plist := filepath.Join(f.config, "Library", "LaunchAgents", "dev.burrow.syncd.plist")
-	if b, err := os.ReadFile(plist); err != nil || !strings.Contains(string(b), "/Users/me/MySync") {
+	if b, err := os.ReadFile(plist); err != nil || !strings.Contains(string(b), macRoot) {
 		t.Fatalf("plist: %q, %v", b, err)
 	}
 	if len(f.cmds) != 2 || !strings.HasPrefix(f.cmds[0], "launchctl bootout") || !strings.HasPrefix(f.cmds[1], "launchctl bootstrap gui/") || !strings.HasSuffix(f.cmds[1], "dev.burrow.syncd.plist") {
@@ -179,7 +218,7 @@ func TestServiceInstallOnMacAndWindows(t *testing.T) {
 
 	f = useFakeOS(t, "windows")
 	f.withEnv(t)
-	if code := serviceCmd([]string{"install", "--root", `D:\MySync`}, &out, &errb); code != 0 {
+	if code := serviceCmd([]string{"install", "--root", t.TempDir()}, &out, &errb); code != 0 {
 		t.Fatalf("windows install: %d %q", code, errb.String())
 	}
 	if len(f.cmds) != 1 || !strings.HasPrefix(f.cmds[0], `reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v syncd`) || !strings.Contains(f.cmds[0], "/f") {

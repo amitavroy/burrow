@@ -198,6 +198,23 @@ func serviceInstall(rootDir string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "syncd: no .env in the current folder; run `syncd service install` from the folder that holds it (the OAuth client ID and secret)")
 		return 1
 	}
+	// `run` never creates its root (a missing one may be an unmounted drive),
+	// so a service for a root that does not exist yet would fail every minute.
+	st, err := os.Stat(root)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			fmt.Fprintf(stderr, "syncd: service install failed: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "created %s\n", root)
+	case err != nil:
+		fmt.Fprintf(stderr, "syncd: service install failed: %v\n", err)
+		return 1
+	case !st.IsDir():
+		fmt.Fprintf(stderr, "syncd: service install failed: %s is not a directory\n", root)
+		return 1
+	}
 	spec := serviceSpec{Exe: exe, Root: root, WorkDir: work}
 
 	switch goos {
