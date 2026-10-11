@@ -27,7 +27,10 @@ type Event struct {
 	// MovedFrom is set when the file was a rename or move of a tracked file:
 	// RelPath is the new path and nothing was uploaded.
 	MovedFrom string
-	Err       error
+	// Trashed is set when the file is gone locally and was moved to the Drive
+	// trash: RelPath is the old path.
+	Trashed bool
+	Err     error
 }
 
 // Summary counts what one Sync did.
@@ -37,6 +40,8 @@ type Summary struct {
 	Updated  int
 	// Moved counts renamed or moved files, handled without an upload.
 	Moved int
+	// Trashed counts files deleted locally and moved to the Drive trash.
+	Trashed int
 	// Synced counts files skipped because Drive already has their content.
 	Synced int
 	Failed int
@@ -70,12 +75,20 @@ func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc,
 // belongs. A *drive.Uploader's Move method is the real one.
 type MoveFunc func(ctx context.Context, driveFileID, newRel string) (drive.FileInfo, error)
 
+// TrashFunc moves the Drive file driveFileID to the Drive trash. A
+// *drive.Uploader's Trash method is the real one.
+type TrashFunc func(ctx context.Context, driveFileID string) error
+
 // SyncOption tunes SyncWorkers.
 type SyncOption func(*runState)
 
 // WithMove lets the sync recognise a renamed or moved file (see tryMove) and
 // move it in Drive instead of uploading it again.
 func WithMove(m MoveFunc) SyncOption { return func(r *runState) { r.move = m } }
+
+// WithTrash lets the sync trash the Drive file of a tracked file that is gone
+// locally. Without it, deleted files are left alone in Drive.
+func WithTrash(t TrashFunc) SyncOption { return func(r *runState) { r.trash = t } }
 
 // SyncWorkers is Sync with workers jobs in flight at once (at least 1). The
 // upload function must be safe for concurrent use when workers > 1; report is
@@ -87,7 +100,7 @@ func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload Uplo
 	if _, err := repo.ResetRunningJobs(ctx); err != nil {
 		return Summary{}, err
 	}
-	res, err := Scan(root)
+	plan, res, err := diff(ctx, root, repo)
 	if err != nil {
 		return Summary{}, err
 	}
@@ -103,7 +116,9 @@ func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload Uplo
 	if err := noteScanErrors(ctx, root, repo, res, entries); err != nil {
 		return run.sum, err
 	}
-	if err := repo.EnqueueJobs(ctx, paths); err != nil {
+	// Missing files become jobs too: the worker trashes them in Drive. A
+	// rename is not missing (diff pairs it with its new path).
+	if err := repo.EnqueueJobs(ctx, append(paths, plan.Missing...)); err != nil {
 		return run.sum, err
 	}
 
@@ -165,7 +180,8 @@ type runState struct {
 	mu     stdsync.Mutex
 	sum    Summary
 	report func(Event)
-	move   MoveFunc // nil: renames are uploaded as new files
+	move   MoveFunc  // nil: renames are uploaded as new files
+	trash  TrashFunc // nil: deleted files are left in Drive
 }
 
 // add updates the summary and, when e is not nil, reports it, in that order
@@ -205,16 +221,15 @@ func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFun
 			return err
 		}
 		e, ok := lookup(job.RelPath)
-		if !ok { // left over from an earlier run; the file is gone or ignored now
-			slog.Debug("dropped job, file is gone or ignored", "path", job.RelPath, "job", job.ID)
-			if err := errors.Join(repo.CompleteJob(bg, job.ID), repo.ClearError(bg, job.RelPath)); err != nil {
-				return err
-			}
-			continue
-		}
 		var out error // an error that must stop the worker
 		panicked := safely("worker", func() {
-			out = runJob(ctx, bg, root, repo, upload, run, job, e)
+			if !ok { // the file is gone or ignored now: trash it in Drive if it was deleted
+				fileErr, fatal := trashGone(ctx, slog.With("path", job.RelPath, "job", job.ID), root, repo, run, job.RelPath)
+				out = finishJob(bg, repo, job, fileErr, fatal)
+				return
+			}
+			fileErr, fatal := process(ctx, slog.With("path", e.RelPath, "job", job.ID), root, repo, upload, run, e)
+			out = finishJob(bg, repo, job, fileErr, fatal)
 		}, "path", job.RelPath, "job", job.ID)
 		if panicked {
 			out = failPanicked(bg, repo, run, job)
@@ -225,10 +240,9 @@ func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFun
 	}
 }
 
-// runJob processes one claimed job and records its outcome. The returned error
-// must stop the worker (a fatal error from process, or the database failing).
-func runJob(ctx, bg context.Context, root string, repo *store.Repo, upload UploadFunc, run *runState, job store.Job, e Entry) error {
-	fileErr, fatal := process(ctx, slog.With("path", e.RelPath, "job", job.ID), root, repo, upload, run, e)
+// finishJob records the outcome of a claimed job. The returned error must stop
+// the worker (fatal, or the database failing).
+func finishJob(bg context.Context, repo *store.Repo, job store.Job, fileErr, fatal error) error {
 	switch {
 	case fatal != nil:
 		if err := repo.RequeueJob(bg, job.ID); err != nil {
@@ -242,6 +256,44 @@ func runJob(ctx, bg context.Context, root string, repo *store.Repo, upload Uploa
 		)
 	}
 	return errors.Join(repo.CompleteJob(bg, job.ID), repo.ClearError(bg, job.RelPath))
+}
+
+// trashGone moves the Drive file of rel to the Drive trash when rel is tracked
+// and its local file is really gone (Lstat says not-exist; a file that is only
+// ignored or not regular is left alone), then drops the row. The file_revisions
+// rows stay. A Drive file that is already gone counts as done.
+func trashGone(ctx context.Context, log *slog.Logger, root string, repo *store.Repo, run *runState, rel string) (fileErr, fatal error) {
+	if run.trash == nil {
+		return nil, nil
+	}
+	row, err := repo.Get(ctx, rel)
+	if errors.Is(err, store.ErrNotFound) || (err == nil && row.DriveFileID == "") {
+		return nil, nil // never reached Drive: nothing to trash
+	}
+	if err != nil {
+		return nil, err
+	}
+	if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(rel))); !errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	switch err := run.trash(ctx, row.DriveFileID); {
+	case err == nil, errors.Is(err, drive.ErrFileNotFound):
+	case errors.Is(err, drive.ErrNotSignedIn), errors.Is(err, drive.ErrSessionExpired):
+		log.Error("sync aborted, sign-in lost", "err", err)
+		return nil, err
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	default:
+		log.Warn("trash failed", "drive_file_id", row.DriveFileID, "err", err)
+		run.add(func(s *Summary) { s.Failed++ }, &Event{RelPath: rel, Err: err})
+		return err, nil
+	}
+	if err := repo.Delete(context.WithoutCancel(ctx), rel); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, fmt.Errorf("record %s: %w", rel, err)
+	}
+	log.Info("trashed, deleted locally", "drive_file_id", row.DriveFileID)
+	run.add(func(s *Summary) { s.Trashed++ }, &Event{RelPath: rel, Trashed: true})
+	return nil, nil
 }
 
 // failPanicked records a job whose processing panicked as an ordinary failed

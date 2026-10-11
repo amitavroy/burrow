@@ -81,7 +81,7 @@ func TestDiffClassifiesFiles(t *testing.T) {
 	if want := []string{"gone.txt"}; !reflect.DeepEqual(plan.Missing, want) {
 		t.Errorf("Missing = %v, want %v", plan.Missing, want)
 	}
-	if plan.Unchanged != 1 || plan.Ignored != 1 || plan.Queued() != 5 {
+	if plan.Unchanged != 1 || plan.Ignored != 1 || plan.Queued() != 6 {
 		t.Errorf("plan = %+v", plan)
 	}
 	if n, _ := repo.CountJobs(context.Background()); n != 0 {

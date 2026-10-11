@@ -508,3 +508,21 @@ func TestSyncFolderRenameMovesEachFile(t *testing.T) {
 		}
 	}
 }
+
+// A rename must not be mistaken for a delete: the old path is quiet for a
+// while, but only the move happens.
+func TestRunRenameIsNotTrashed(t *testing.T) {
+	root := t.TempDir()
+	repo := openRepo(t)
+	fd, m, tr := &fakeDrive{realMD5: true}, &liveMover{}, &trasher{}
+	startRun(t, root, repo, fd, RunOptions{Move: m.move, Trash: tr.trash})
+	write(t, filepath.Join(root, "a.txt"), "alpha")
+	eventually(t, "first upload", func() bool { return fd.count("a.txt") == 1 })
+
+	if err := os.Rename(filepath.Join(root, "a.txt"), filepath.Join(root, "c.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	eventually(t, "move", func() bool { return m.count() == 1 })
+	stays(t, "nothing trashed", 600*time.Millisecond, func() bool { return len(tr.got()) == 0 })
+}

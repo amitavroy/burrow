@@ -18,6 +18,7 @@ type RunOptions struct {
 	Settle     time.Duration // debounce settle period; default 1s
 	RetryEvery time.Duration // failed jobs go back to pending this often; default 5m
 	Move       MoveFunc      // moves a renamed file in Drive instead of uploading it; nil: no move detection
+	Trash      TrashFunc     // trashes the Drive file of a deleted file; nil: deletes are not propagated
 	PollEvery  time.Duration // an idle worker looks for work at least this often; default 1s
 
 	// OnStart is called once the watch is up, with the number of directories
@@ -83,9 +84,6 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 	}
 	slog.Info("reconciled", "new", len(plan.New), "changed", len(plan.Changed),
 		"unchanged", plan.Unchanged, "missing", len(plan.Missing))
-	for _, m := range plan.Missing {
-		slog.Info("missing locally, not in Drive trash yet", "path", m)
-	}
 	if opts.OnReconcile != nil {
 		opts.OnReconcile(plan)
 	}
@@ -108,7 +106,7 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 			}
 		}
 	}
-	state := &runState{report: report, move: opts.Move}
+	state := &runState{report: report, move: opts.Move, trash: opts.Trash}
 
 	// Ready paths become jobs.
 	wg.Add(1)
@@ -129,6 +127,39 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 					}
 					kick(1)
 				}, "path", p)
+			}
+		}
+	}()
+
+	// A delete or rename is followed by a rescan once things go quiet, long
+	// enough (3 settle periods) for the new path of a rename to have been
+	// debounced and its move job started, so Diff pairs the two as a move
+	// instead of reporting the old path as deleted. Missing files become jobs
+	// that trash their Drive file.
+	// ponytail: full walk per burst of deletes; a per-path check if big trees make it slow.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t := time.NewTimer(time.Hour)
+		t.Stop()
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-d.Removed():
+				t.Reset(3 * opts.Settle)
+			case <-t.C:
+				safely("run.rescan", func() {
+					plan, err := Reconcile(ctx, root, repo)
+					if err != nil {
+						if ctx.Err() == nil {
+							stop(err)
+						}
+						return
+					}
+					kick(plan.Queued())
+				})
 			}
 		}
 	}()

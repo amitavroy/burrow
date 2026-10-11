@@ -304,7 +304,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 23 | M4 Live watching | Hardening | Panic recovery in every goroutine; clear error on `max_user_watches` | A forced panic is logged and the daemon keeps running | 21 | => Done
 | 24 | M5 Rename and delete | Inode / file ID tracking | Per-OS helper for inode (Unix) or file ID (Windows); store it in the DB | `syncd stat` shows the inode for a tracked file | 8 | => Done
 | 25 | M5 Rename and delete | Rename and move | Match inode and hash; `files.update` with `addParents` / `removeParents` | A renamed file keeps its Drive file ID; nothing is re-uploaded | 21, 24 | => Done
-| 26 | M5 Rename and delete | Delete to trash | Local delete sets `trashed: true` in Drive | **Checkpoint:** a deleted file sits in the Drive trash | 21 |
+| 26 | M5 Rename and delete | Delete to trash | Local delete sets `trashed: true` in Drive | **Checkpoint:** a deleted file sits in the Drive trash | 21 | => Done
 | 27 | M5 Rename and delete | Folder rename and delete | Apply moves and trashes to whole folders and their cache entries | Renaming a folder moves it in Drive with its children intact | 25, 26 |
 | 28 | M6 Restore | config.json | Read and write the shared settings file in Drive (ignore rules, version) | Ignore rules edited on one run apply on the next | 5 |
 | 29 | M6 Restore | List Drive tree | List all files under `MySync/` with `appProperties`, `md5Checksum`, `headRevisionId` | `syncd remote ls` prints the remote tree | 5 |

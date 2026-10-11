@@ -434,6 +434,10 @@ func reportEvent(stdout, stderr io.Writer) func(burrowsync.Event) {
 			fmt.Fprintf(stderr, "failed %s: %v\n", e.RelPath, e.Err)
 			return
 		}
+		if e.Trashed {
+			fmt.Fprintf(stdout, "trashed %s\n", e.RelPath)
+			return
+		}
 		if e.MovedFrom != "" {
 			fmt.Fprintf(stdout, "moved %s -> %s\n", e.MovedFrom, e.RelPath)
 			return
@@ -494,6 +498,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		Workers: *workers,
 		Settle:  *settle,
 		Move:    uploader.Move,
+		Trash:   uploader.Trash,
 		OnStart: func(dirs int) {
 			fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", dirs, root)
 		},
@@ -608,11 +613,11 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "resuming %d queued jobs\n", n)
 	}
 	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
-	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), *workers, burrowsync.WithMove(uploader.Move))
+	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), *workers, burrowsync.WithMove(uploader.Move), burrowsync.WithTrash(uploader.Trash))
 	for _, e := range sum.Unreadable {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
 	}
-	fmt.Fprintf(stderr, "%d uploaded, %d updated, %d moved, %d already synced, %d failed, %d ignored\n", sum.Uploaded, sum.Updated, sum.Moved, sum.Synced, sum.Failed, sum.Ignored)
+	fmt.Fprintf(stderr, "%d uploaded, %d updated, %d moved, %d trashed, %d already synced, %d failed, %d ignored\n", sum.Uploaded, sum.Updated, sum.Moved, sum.Trashed, sum.Synced, sum.Failed, sum.Ignored)
 	if sum.Failed > 0 || len(sum.Unreadable) > 0 {
 		fmt.Fprintln(stderr, "see 'syncd errors' for details")
 	}

@@ -25,7 +25,7 @@ type Plan struct {
 	Moved []Move
 	// Missing are rows whose file is not in the scan: deleted, renamed, or in a
 	// folder that could not be read or is no longer mounted. They are only
-	// reported; trashing them in Drive is a later ticket.
+	// queued as jobs, which trash their Drive file when the run has a TrashFunc.
 	Missing   []string
 	Unchanged int
 	Ignored   int
@@ -43,7 +43,7 @@ type Move struct{ From, To string }
 
 // Queued is how many files a Reconcile queues. A move is queued under its new
 // path.
-func (p Plan) Queued() int { return len(p.New) + len(p.Changed) + len(p.Moved) }
+func (p Plan) Queued() int { return len(p.New) + len(p.Changed) + len(p.Moved) + len(p.Missing) }
 
 // Diff scans root and compares it with the files table. It writes nothing. A
 // file is unchanged when its size and mtime match its row; the job that
@@ -192,6 +192,7 @@ func Reconcile(ctx context.Context, root string, repo *store.Repo) (Plan, error)
 	for _, m := range plan.Moved {
 		queue = append(queue, m.To) // the job confirms the move by hash
 	}
+	queue = append(queue, plan.Missing...) // the job trashes its Drive file
 	if err := repo.EnqueueJobs(ctx, queue); err != nil {
 		return plan, err
 	}

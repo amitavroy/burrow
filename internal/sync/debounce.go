@@ -20,6 +20,9 @@ type Debouncer struct {
 	in    <-chan WatchEvent
 	fires chan fire
 	ready chan string
+	// removed gets a signal (never blocking) for each rename or remove event,
+	// file or folder: something may be gone, see Removed.
+	removed chan struct{}
 
 	pending map[string]*pendingFile // touched only by the loop
 
@@ -54,6 +57,7 @@ func NewDebouncer(in <-chan WatchEvent, root string, settle time.Duration) *Debo
 		in:      in,
 		fires:   make(chan fire),
 		ready:   make(chan string, 64),
+		removed: make(chan struct{}, 1),
 		pending: map[string]*pendingFile{},
 		done:    make(chan struct{}),
 		exited:  make(chan struct{}),
@@ -66,6 +70,10 @@ func NewDebouncer(in <-chan WatchEvent, root string, settle time.Duration) *Debo
 // changing. It is closed when the Debouncer stops. Paths still waiting at that
 // moment are dropped; the startup scan finds them next time.
 func (d *Debouncer) Ready() <-chan string { return d.ready }
+
+// Removed signals that a rename or remove event was seen. Signals pile up into
+// one, so it says "something may be gone since you last looked", not what.
+func (d *Debouncer) Removed() <-chan struct{} { return d.removed }
 
 // Close stops the Debouncer and closes Ready. It is safe to call more than once.
 func (d *Debouncer) Close() {
@@ -99,6 +107,12 @@ func (d *Debouncer) loop() {
 }
 
 func (d *Debouncer) onEvent(e WatchEvent) {
+	if e.Op == OpRename || e.Op == OpRemove {
+		select {
+		case d.removed <- struct{}{}:
+		default:
+		}
+	}
 	if e.IsDir { // jobs are per file; the watcher reports files in new folders itself
 		return
 	}

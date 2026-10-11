@@ -44,6 +44,7 @@ type fakeFile struct {
 // moveReq is one files.update (a move) the fake received.
 type moveReq struct {
 	id, name, rel, add, remove string
+	trashed                    bool
 }
 
 // fakeFail makes the next n (-1: every) requests of kind "lookup" (tag lookup)
@@ -133,6 +134,11 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.serveFile(w, r, id)
 		return
 	}
+	if r.Method == http.MethodPatch && strings.Contains(path, "/files/") && !strings.HasPrefix(path, "/upload/") {
+		w.WriteHeader(http.StatusNotFound) // files.update of a file the fake does not hold
+		_, _ = w.Write([]byte(`{"error":{"code":404,"message":"File not found"}}`))
+		return
+	}
 	switch {
 	case path == "/token":
 		f.tokenReqs++
@@ -218,11 +224,17 @@ func (f *uploadDrive) serveFile(w http.ResponseWriter, r *http.Request, id strin
 		var body struct {
 			Name          string            `json:"name"`
 			AppProperties map[string]string `json:"appProperties"`
+			Trashed       bool              `json:"trashed"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		q := r.URL.Query()
-		req := moveReq{id: id, name: body.Name, rel: body.AppProperties[tagRelPath], add: q.Get("addParents"), remove: q.Get("removeParents")}
+		req := moveReq{id: id, name: body.Name, rel: body.AppProperties[tagRelPath], add: q.Get("addParents"), remove: q.Get("removeParents"), trashed: body.Trashed}
 		f.moves = append(f.moves, req)
+		if body.Trashed {
+			ff.trashed = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "trashed": true})
+			return
+		}
 		if req.remove != "" {
 			for _, rm := range strings.Split(req.remove, ",") {
 				ff.parents = slices.DeleteFunc(ff.parents, func(p string) bool { return p == rm })
