@@ -19,5 +19,6 @@
 // one iteration at a time under safely, which recovers and logs a panic, and a
 // watch refused by the operating system is reported as ErrWatchLimit. Entry and
 // the saved rows carry the file's inode (Unix) or file ID (Windows), read by
-// fileID, for rename detection.
+// fileID, for rename detection: a new file that matches a vanished tracked file
+// by inode and hash is moved in Drive (MoveFunc) instead of uploaded.
 package sync

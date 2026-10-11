@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,19 @@ import (
 type fakeDir struct {
 	id, name, parent string
 	trashed          bool
+}
+
+// fakeFile is a Drive file the fake can report and move.
+type fakeFile struct {
+	parents []string
+	name    string
+	trashed bool
+	props   map[string]string
+}
+
+// moveReq is one files.update (a move) the fake received.
+type moveReq struct {
+	id, name, rel, add, remove string
 }
 
 // fakeFail makes the next n (-1: every) requests of kind "lookup" (tag lookup)
@@ -68,6 +82,11 @@ type uploadDrive struct {
 	received int
 	authz    []string
 
+	// files are Drive files that Move can act on, by ID; moves records the
+	// update requests they received.
+	files map[string]*fakeFile
+	moves []moveReq
+
 	// fails are injected Drive errors, consumed in order by requests that match.
 	fails      []fakeFail
 	lookups    int  // tag lookups served (or failed)
@@ -89,6 +108,8 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	kind := ""
 	switch {
+	case strings.Contains(path, "/files/") && f.files[path[strings.LastIndex(path, "/")+1:]] != nil:
+		kind = "file" // files.get / files.update of a movable file
 	case strings.HasPrefix(path, "/upload/") || strings.HasPrefix(path, "/session/"):
 		kind = "upload"
 	case r.Method == http.MethodGet && strings.HasSuffix(path, "/files") && !strings.Contains(r.URL.Query().Get("q"), "mimeType = '"+folderMimeType+"'"):
@@ -106,6 +127,10 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(status)
 		fmt.Fprintf(w, `{"error":{"code":%d,"message":"injected","errors":[{"reason":%q}]}}`, status, reason)
+		return
+	}
+	if id := path[strings.LastIndex(path, "/")+1:]; strings.Contains(path, "/files/") && !strings.HasPrefix(path, "/upload/") && f.files[id] != nil {
+		f.serveFile(w, r, id)
 		return
 	}
 	switch {
@@ -180,6 +205,39 @@ func (f *uploadDrive) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(existingFile(id))
 	default:
 		w.WriteHeader(http.StatusNotImplemented)
+	}
+}
+
+// serveFile answers files.get and files.update (a move) for a file in f.files.
+func (f *uploadDrive) serveFile(w http.ResponseWriter, r *http.Request, id string) {
+	ff := f.files[id]
+	switch r.Method {
+	case http.MethodGet:
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "parents": ff.parents, "trashed": ff.trashed})
+	case http.MethodPatch:
+		var body struct {
+			Name          string            `json:"name"`
+			AppProperties map[string]string `json:"appProperties"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		q := r.URL.Query()
+		req := moveReq{id: id, name: body.Name, rel: body.AppProperties[tagRelPath], add: q.Get("addParents"), remove: q.Get("removeParents")}
+		f.moves = append(f.moves, req)
+		if req.remove != "" {
+			for _, rm := range strings.Split(req.remove, ",") {
+				ff.parents = slices.DeleteFunc(ff.parents, func(p string) bool { return p == rm })
+			}
+		}
+		if req.add != "" && !slices.Contains(ff.parents, req.add) {
+			ff.parents = append(ff.parents, req.add)
+		}
+		ff.name, ff.props = body.Name, body.AppProperties
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id": id, "name": ff.name, "size": "5", "md5Checksum": "abc", "headRevisionId": "rev1",
+			"appProperties": ff.props,
+		})
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 

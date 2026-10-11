@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -17,6 +18,11 @@ type Plan struct {
 	// finished). Changed files have a row whose size or mtime differs.
 	New     []string
 	Changed []string
+	// Moved are likely renames: a new file whose inode and size equal those of
+	// exactly one missing row. Found without hashing, so it is a preview; the
+	// job that handles the new path confirms it by hash. Such files are in
+	// neither New nor Missing.
+	Moved []Move
 	// Missing are rows whose file is not in the scan: deleted, renamed, or in a
 	// folder that could not be read or is no longer mounted. They are only
 	// reported; trashing them in Drive is a later ticket.
@@ -32,8 +38,12 @@ type Plan struct {
 	inodes map[string]uint64
 }
 
-// Queued is how many files a Reconcile queues.
-func (p Plan) Queued() int { return len(p.New) + len(p.Changed) }
+// Move is a likely rename of a tracked file.
+type Move struct{ From, To string }
+
+// Queued is how many files a Reconcile queues. A move is queued under its new
+// path.
+func (p Plan) Queued() int { return len(p.New) + len(p.Changed) + len(p.Moved) }
 
 // Diff scans root and compares it with the files table. It writes nothing. A
 // file is unchanged when its size and mtime match its row; the job that
@@ -91,10 +101,50 @@ func diff(ctx context.Context, root string, repo *store.Repo) (Plan, Result, err
 		}
 		plan.Missing = append(plan.Missing, r.RelPath)
 	}
+	pairMoves(&plan, res.Entries, byPath)
 	sort.Strings(plan.New)
 	sort.Strings(plan.Changed)
 	sort.Strings(plan.Missing)
+	sort.Slice(plan.Moved, func(i, j int) bool { return plan.Moved[i].To < plan.Moved[j].To })
 	return plan, res, nil
+}
+
+// pairMoves moves a new file out of plan.New, and its counterpart out of
+// plan.Missing, into plan.Moved when the file has a known inode that exactly
+// one missing tracked row also has, and the sizes agree. Anything ambiguous
+// stays new and missing.
+func pairMoves(plan *Plan, entries []Entry, rows map[string]store.File) {
+	missingByInode := map[uint64][]string{}
+	for _, m := range plan.Missing {
+		if r := rows[m]; r.Inode != 0 && r.DriveFileID != "" {
+			missingByInode[r.Inode] = append(missingByInode[r.Inode], m)
+		}
+	}
+	entryOf := make(map[string]Entry, len(entries))
+	newByInode := map[uint64]int{}
+	for _, e := range entries {
+		entryOf[e.RelPath] = e
+	}
+	for _, n := range plan.New {
+		if ino := entryOf[n].Inode; ino != 0 {
+			newByInode[ino]++
+		}
+	}
+	paired := map[string]bool{} // new and missing paths that became a move
+	for _, n := range plan.New {
+		e := entryOf[n]
+		from := missingByInode[e.Inode]
+		if e.Inode == 0 || len(from) != 1 || newByInode[e.Inode] != 1 || rows[from[0]].Size != e.Size {
+			continue
+		}
+		plan.Moved = append(plan.Moved, Move{From: from[0], To: n})
+		paired[n], paired[from[0]] = true, true
+	}
+	if len(paired) == 0 {
+		return
+	}
+	plan.New = slices.DeleteFunc(plan.New, func(p string) bool { return paired[p] })
+	plan.Missing = slices.DeleteFunc(plan.Missing, func(p string) bool { return paired[p] })
 }
 
 func under(rel string, dirs []string) bool {
@@ -138,7 +188,11 @@ func Reconcile(ctx context.Context, root string, repo *store.Repo) (Plan, error)
 	if err := repo.SetInodes(ctx, plan.inodes); err != nil {
 		return plan, err
 	}
-	if err := repo.EnqueueJobs(ctx, append(append([]string(nil), plan.New...), plan.Changed...)); err != nil {
+	queue := append(append([]string(nil), plan.New...), plan.Changed...)
+	for _, m := range plan.Moved {
+		queue = append(queue, m.To) // the job confirms the move by hash
+	}
+	if err := repo.EnqueueJobs(ctx, queue); err != nil {
 		return plan, err
 	}
 	return plan, nil

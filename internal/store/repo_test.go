@@ -552,3 +552,71 @@ func TestSetInodesUpdatesRowsInOneCall(t *testing.T) {
 		t.Errorf("SetInode: %d", a.Inode)
 	}
 }
+
+func TestFindByInode(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	_ = r.Upsert(ctx, File{RelPath: "a", DriveFileID: "d1", Inode: 10})
+	_ = r.Upsert(ctx, File{RelPath: "b", DriveFileID: "d2", Inode: 10}) // a hard link
+	_ = r.Upsert(ctx, File{RelPath: "c", Inode: 10})                    // never uploaded: no Drive ID
+	_ = r.Upsert(ctx, File{RelPath: "d", DriveFileID: "d4", Inode: 20})
+	_ = r.Upsert(ctx, File{RelPath: "e", DriveFileID: "d5"}) // inode unknown
+
+	got, err := r.FindByInode(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].RelPath != "a" || got[1].RelPath != "b" {
+		t.Errorf("got %+v, want a and b (not the row without a Drive ID)", got)
+	}
+	if got, _ := r.FindByInode(ctx, 0); len(got) != 0 {
+		t.Errorf("inode 0 matched %+v, it means unknown", got)
+	}
+	if got, _ := r.FindByInode(ctx, 999); len(got) != 0 {
+		t.Errorf("got %+v for an unknown inode", got)
+	}
+}
+
+func TestRenameFileKeepsIdentityAndRevisions(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	old := File{RelPath: "a.txt", DriveFileID: "d1", Size: 5, MTime: 1, Inode: 10, SyncedMD5: "m", BaseMD5: "m", BaseRevisionID: "rev1"}
+	if err := r.RecordUpload(ctx, old, Revision{DriveFileID: "d1", RevisionID: "rev1", MD5: "m", Size: 5, Time: 1, Source: "upload"}); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Upsert(ctx, File{RelPath: "dir/b.txt"}) // a leftover row without a Drive ID at the target
+
+	err := r.RenameFile(ctx, "a.txt", "dir/b.txt", File{Size: 6, MTime: 2, Inode: 11, LocalMD5: "m"})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.Get(ctx, "a.txt"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("the old row is still there: %v", err)
+	}
+	got, err := r.Get(ctx, "dir/b.txt")
+	want := File{RelPath: "dir/b.txt", DriveFileID: "d1", Size: 6, MTime: 2, Inode: 11, LocalMD5: "m", SyncedMD5: "m", BaseMD5: "m", BaseRevisionID: "rev1"}
+	if err != nil || got != want {
+		t.Fatalf("row = %+v, err = %v; want %+v", got, err, want)
+	}
+	revs, _ := r.Revisions(ctx, "dir/b.txt")
+	if len(revs) != 1 || revs[0].RevisionID != "rev1" {
+		t.Errorf("revisions did not follow the Drive ID: %+v", revs)
+	}
+}
+
+func TestRenameFileWithoutARowIsNotFoundAndChangesNothing(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	_ = r.Upsert(ctx, File{RelPath: "keep", DriveFileID: "d1"})
+	_ = r.Upsert(ctx, File{RelPath: "target"}) // would be dropped if the transaction did not roll back
+
+	err := r.RenameFile(ctx, "missing", "target", File{})
+
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if _, err := r.Get(ctx, "target"); err != nil {
+		t.Errorf("the failed rename was not rolled back: %v", err)
+	}
+}

@@ -17,6 +17,7 @@ type RunOptions struct {
 	Workers    int           // jobs in flight at once; default 3
 	Settle     time.Duration // debounce settle period; default 1s
 	RetryEvery time.Duration // failed jobs go back to pending this often; default 5m
+	Move       MoveFunc      // moves a renamed file in Drive instead of uploading it; nil: no move detection
 	PollEvery  time.Duration // an idle worker looks for work at least this often; default 1s
 
 	// OnStart is called once the watch is up, with the number of directories
@@ -107,7 +108,7 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 			}
 		}
 	}
-	state := &runState{report: report}
+	state := &runState{report: report, move: opts.Move}
 
 	// Ready paths become jobs.
 	wg.Add(1)

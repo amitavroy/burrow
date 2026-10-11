@@ -434,6 +434,10 @@ func reportEvent(stdout, stderr io.Writer) func(burrowsync.Event) {
 			fmt.Fprintf(stderr, "failed %s: %v\n", e.RelPath, e.Err)
 			return
 		}
+		if e.MovedFrom != "" {
+			fmt.Fprintf(stdout, "moved %s -> %s\n", e.MovedFrom, e.RelPath)
+			return
+		}
 		verb := "uploaded"
 		if e.Updated {
 			verb = "updated"
@@ -489,6 +493,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	err = burrowsync.Run(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), burrowsync.RunOptions{
 		Workers: *workers,
 		Settle:  *settle,
+		Move:    uploader.Move,
 		OnStart: func(dirs int) {
 			fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", dirs, root)
 		},
@@ -527,22 +532,25 @@ func scanDiff(root string, stdout, stderr io.Writer) int {
 	for _, p := range plan.Changed {
 		fmt.Fprintln(stdout, "changed", p)
 	}
+	for _, m := range plan.Moved {
+		fmt.Fprintf(stdout, "moved %s -> %s\n", m.From, m.To)
+	}
 	for _, p := range plan.Missing {
 		fmt.Fprintln(stdout, "missing", p)
 	}
 	for _, e := range plan.Unreadable {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
 	}
-	fmt.Fprintf(stderr, "%d new, %d changed, %d unchanged, %d missing, %d ignored\n",
-		len(plan.New), len(plan.Changed), plan.Unchanged, len(plan.Missing), plan.Ignored)
+	fmt.Fprintf(stderr, "%d new, %d changed, %d moved, %d unchanged, %d missing, %d ignored\n",
+		len(plan.New), len(plan.Changed), len(plan.Moved), plan.Unchanged, len(plan.Missing), plan.Ignored)
 	return 0
 }
 
 // reportReconcile prints the outcome of the startup scan of `syncd run`: the
 // counts, then up to 10 files that are gone locally.
 func reportReconcile(stderr io.Writer, p burrowsync.Plan) {
-	fmt.Fprintf(stderr, "reconciled: %d new, %d changed, %d unchanged, %d missing locally\n",
-		len(p.New), len(p.Changed), p.Unchanged, len(p.Missing))
+	fmt.Fprintf(stderr, "reconciled: %d new, %d changed, %d moved, %d unchanged, %d missing locally\n",
+		len(p.New), len(p.Changed), len(p.Moved), p.Unchanged, len(p.Missing))
 	for i, m := range p.Missing {
 		if i == 10 {
 			fmt.Fprintf(stderr, "  ...and %d more\n", len(p.Missing)-10)
@@ -600,11 +608,11 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "resuming %d queued jobs\n", n)
 	}
 	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
-	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), *workers)
+	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), *workers, burrowsync.WithMove(uploader.Move))
 	for _, e := range sum.Unreadable {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
 	}
-	fmt.Fprintf(stderr, "%d uploaded, %d updated, %d already synced, %d failed, %d ignored\n", sum.Uploaded, sum.Updated, sum.Synced, sum.Failed, sum.Ignored)
+	fmt.Fprintf(stderr, "%d uploaded, %d updated, %d moved, %d already synced, %d failed, %d ignored\n", sum.Uploaded, sum.Updated, sum.Moved, sum.Synced, sum.Failed, sum.Ignored)
 	if sum.Failed > 0 || len(sum.Unreadable) > 0 {
 		fmt.Fprintln(stderr, "see 'syncd errors' for details")
 	}

@@ -19,9 +19,12 @@ type fakeDrive struct {
 	mu     stdsync.Mutex
 	calls  []string
 	before func(ctx context.Context, call int, rel string) error
+	// realMD5 reports the file's real MD5 as Drive would, which a move needs
+	// to match; otherwise a constant is returned.
+	realMD5 bool
 }
 
-func (f *fakeDrive) upload(ctx context.Context, _, rel string) (drive.FileInfo, error) {
+func (f *fakeDrive) upload(ctx context.Context, localPath, rel string) (drive.FileInfo, error) {
 	f.mu.Lock()
 	f.calls = append(f.calls, rel)
 	n := len(f.calls)
@@ -32,7 +35,14 @@ func (f *fakeDrive) upload(ctx context.Context, _, rel string) (drive.FileInfo, 
 			return drive.FileInfo{}, err
 		}
 	}
-	return drive.FileInfo{ID: "id-" + rel, MD5: "m", RevisionID: "r"}, nil
+	md5 := "m"
+	if f.realMD5 {
+		var err error
+		if md5, err = fileMD5(localPath); err != nil {
+			return drive.FileInfo{}, err
+		}
+	}
+	return drive.FileInfo{ID: "id-" + rel, MD5: md5, RevisionID: "r"}, nil
 }
 
 func (f *fakeDrive) count(rel string) int {

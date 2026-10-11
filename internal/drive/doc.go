@@ -8,5 +8,6 @@
 // and transient network errors with jittered exponential backoff (5 attempts);
 // the tag lookup at the start of each attempt keeps a retry from duplicating a file.
 // Describe turns an upload error into the short readable message shown by
-// syncd errors.
+// syncd errors. Uploader.Move renames and moves a Drive file with one update
+// (addParents/removeParents), keeping its ID and revisions.
 package drive

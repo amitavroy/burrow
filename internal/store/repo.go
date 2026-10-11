@@ -261,6 +261,69 @@ func (r *Repo) Get(ctx context.Context, relPath string) (File, error) {
 	return f, nil
 }
 
+// FindByInode returns the tracked files (those with a Drive ID) that have the
+// given inode or file ID. 0 means unknown and matches nothing. The inode is
+// only a hint: it is unique per filesystem, shared by hard links and reused
+// after a delete.
+func (r *Repo) FindByInode(ctx context.Context, inode uint64) ([]File, error) {
+	if inode == 0 {
+		return nil, nil
+	}
+	files, err := call(ctx, r, func(db *sql.DB) ([]File, error) {
+		rows, err := db.Query(`SELECT `+fileColumns+` FROM files WHERE inode = ? AND drive_file_id IS NOT NULL ORDER BY rel_path`, nullInode(inode))
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []File
+		for rows.Next() {
+			f, err := scanFile(rows)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, f)
+		}
+		return out, rows.Err()
+	})
+	if err != nil {
+		return nil, fmt.Errorf("find by inode: %w", err)
+	}
+	return files, nil
+}
+
+// RenameFile moves the row at from to the path to, in one transaction. The row
+// keeps its Drive ID, base state, synced MD5 and (through the Drive ID) its
+// revisions; size, mtime, inode and local MD5 are taken from f. A leftover row
+// without a Drive ID at to is dropped first. It returns ErrNotFound when
+// there is no row at from.
+func (r *Repo) RenameFile(ctx context.Context, from, to string, f File) error {
+	_, err := call(ctx, r, func(db *sql.DB) (struct{}, error) {
+		tx, err := db.Begin()
+		if err != nil {
+			return struct{}{}, err
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`DELETE FROM files WHERE rel_path = ? AND drive_file_id IS NULL`, to); err != nil {
+			return struct{}{}, err
+		}
+		res, err := tx.Exec(`UPDATE files SET rel_path = ?, size = ?, mtime = ?, inode = ?, local_md5 = ? WHERE rel_path = ?`,
+			to, f.Size, f.MTime, nullInode(f.Inode), nullString(f.LocalMD5), from)
+		if err != nil {
+			return struct{}{}, err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return struct{}{}, err
+		} else if n == 0 {
+			return struct{}{}, ErrNotFound
+		}
+		return struct{}{}, tx.Commit()
+	})
+	if err != nil {
+		return fmt.Errorf("rename %q to %q: %w", from, to, err)
+	}
+	return nil
+}
+
 // GetByDriveID returns the file with the given Drive file ID, or ErrNotFound.
 func (r *Repo) GetByDriveID(ctx context.Context, id string) (File, error) {
 	f, err := call(ctx, r, func(db *sql.DB) (File, error) {

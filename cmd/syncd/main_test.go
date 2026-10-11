@@ -698,7 +698,7 @@ func TestScanDiff(t *testing.T) {
 	if code != 0 || stdout.String() != "new b/new.txt\nchanged edit.txt\nmissing gone.txt\n" {
 		t.Errorf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "1 new, 1 changed, 1 unchanged, 1 missing, 1 ignored") {
+	if !strings.Contains(stderr.String(), "1 new, 1 changed, 0 moved, 1 unchanged, 1 missing, 1 ignored") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 
@@ -722,7 +722,7 @@ func TestReportReconcile(t *testing.T) {
 	}
 	reportReconcile(&out, p)
 	got := out.String()
-	if !strings.HasPrefix(got, "reconciled: 1 new, 2 changed, 7 unchanged, 12 missing locally\n") ||
+	if !strings.HasPrefix(got, "reconciled: 1 new, 2 changed, 0 moved, 7 unchanged, 12 missing locally\n") ||
 		!strings.Contains(got, "  missing: m09\n") || strings.Contains(got, "m10") || !strings.Contains(got, "  ...and 2 more\n") {
 		t.Errorf("output = %q", got)
 	}
@@ -809,5 +809,40 @@ func TestStatLocal(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestScanDiffShowsLikelyMoves(t *testing.T) {
+	root := t.TempDir()
+	dbFile := filepath.Join(t.TempDir(), "burrow.db")
+	oldDB := dbPath
+	dbPath = func() string { return dbFile }
+	t.Cleanup(func() { dbPath = oldDB })
+	if err := os.WriteFile(filepath.Join(root, "new-name.txt"), []byte("alpha"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := os.Stat(filepath.Join(root, "new-name.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ino := inodeForTest(st)
+	if ino == 0 {
+		t.Skip("no inodes on this platform")
+	}
+	repo, err := store.OpenRepo(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.Upsert(context.Background(), store.File{RelPath: "old-name.txt", DriveFileID: "d1", Size: st.Size(), MTime: 1, Inode: ino})
+	repo.Close()
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", "--dry-run", "--diff", "--root", root}, &stdout, &stderr)
+
+	if code != 0 || stdout.String() != "moved old-name.txt -> new-name.txt\n" {
+		t.Errorf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "0 new, 0 changed, 1 moved, 0 unchanged, 0 missing") {
+		t.Errorf("stderr = %q", stderr.String())
 	}
 }

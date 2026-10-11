@@ -232,7 +232,7 @@ syncd sync [--root DIR]                 (root defaults to ~/MySync; usage error 
            sign-in lost       -> abort
            cancelled (Ctrl+C) -> abort
            other error        -> report "failed rel_path: reason", carry on
-  -> stderr: "N uploaded, M updated, K already synced, J failed, I ignored"; exit 0, or 1 if any file failed or the run aborted
+  -> stderr: "N uploaded, M updated, X moved, K already synced, J failed, I ignored"; exit 0, or 1 if any file failed or the run aborted
 ```
 
 - Output: `uploaded <rel_path>` and `updated <rel_path>` lines on stdout; `failed <rel_path>: <reason>`, `skipped: <unreadable entry>` and the summary on stderr. Exit 1 for a failed file or an abort (sign-in lost, interrupted, root unreadable, database failure), with the same login hints as the other commands.
@@ -327,7 +327,7 @@ syncd: stopped; unfinished uploads stay queued
 - **Lost sign-in** stops the run (the workers cannot make progress): in-flight jobs are requeued and `syncd run` exits 1 with the same hint as `sync`. Other errors from the database also stop it.
 - **Watcher problems** (a queue overflow, a folder that could not be watched) are logged and printed on stderr, and the run goes on. Missed events are recovered by the next start's reconcile.
 - **Ctrl+C** cancels the uploads in flight; they resume from the start next time (resumable sessions are not persisted). Exit code 0.
-- **Limits:** only one `syncd` may run jobs against a database at a time; this is enforced by a lock (see Hardening). Renames and deletes are not propagated: a rename uploads the new name and leaves the old file in Drive (ticket 25), a delete leaves the Drive file (ticket 26).
+- **Limits:** only one `syncd` may run jobs against a database at a time; this is enforced by a lock (see Hardening). Renames and moves are handled (see Renames and moves). Deletes are not propagated: a deleted file stays in Drive (ticket 26).
 
 ## Hardening
 
@@ -372,6 +372,31 @@ Rename detection (ticket 25) needs to know that the file that vanished from one 
 - **Old and stale rows catch up without any upload:** rows from before this feature have no inode, and a file replaced by a copy with the same size and mtime has a stale one. Whenever a file is judged unchanged (a job's size-and-mtime shortcut, and `Reconcile` at `run` start) a different non-zero inode is written with `SetInode` / `SetInodes` (one transaction). `Diff` (`scan --dry-run --diff`) stays read-only.
 - **Limits:** the inode is unique per filesystem, not globally (device and volume are not stored), so it is only a hint and ticket 25 always confirms with the hash. Two hard links share one inode. ReFS 128-bit IDs are not supported. Directories are not tracked.
 - **See it:** `syncd stat --local --path notes/todo.txt` prints `Inode:` and should equal `ls -i`. `make vet` also vets for `windows` and `darwin`, since the Windows helper cannot run on the development machine.
+
+## Renames and moves
+
+A renamed or moved file keeps its Drive file ID, its content and its revision history: the app moves the Drive file instead of uploading it again. It works in `syncd sync`, in `syncd run` (live) and after a restart, because the check is made by the job for the new path (`tryMove` in `internal/sync/sync.go`), not by the watcher: OS rename events differ and cannot be paired across a restart, but by the time the job runs the old path is known to be gone.
+
+**The match.** A file with no usable row (no row, or one without a Drive ID) and a known inode is a *move* of a tracked file only when all of these hold; otherwise it is uploaded as new, exactly as before:
+
+| Condition | Why |
+| --- | --- |
+| a tracked row (with a Drive ID and a synced MD5) has the same non-zero inode (see File identity) | the file system says it is the same file |
+| that row's local file no longer exists | a copy or hard link leaves the original in place |
+| **exactly one** such row | two vanished hard links are ambiguous |
+| the new file's streamed MD5 equals that row's synced MD5 | the inode alone can be reused by an unrelated file after a delete |
+
+A rename **plus an edit** in one step fails the hash check and is uploaded as new; the old Drive file stays until deletes are handled (ticket 26). That is the conservative choice: matching on the inode alone could attach a stranger's content to an old Drive file.
+
+**The Drive call** (`Uploader.Move`, `internal/drive/move.go`, under the retry layer): `files.get` for the file's parents, ensure the folder that mirrors the new directory (created lazily like uploads), then one `files.update` with the new `name`, `addParents` the new folder, `removeParents` the old ones and the new `rel_path` appProperty. No content is sent. When the file is already in the right folder the parent arguments are left out, so repeating a move after a lost reply changes nothing. A missing or trashed Drive file is `ErrFileNotFound`; the sync then uploads the file as new and drops the stale row.
+
+**The database.** After Drive says yes, `Repo.RenameFile` renames the row in one transaction: the Drive ID, base MD5, base revision and synced MD5 stay, and `file_revisions` (keyed by Drive ID) follows; size, mtime, inode and local MD5 come from the new file; a leftover row without a Drive ID at the target is dropped. Error rows for the old path are cleared. The move happens before the rename, so a crash in between just repeats the (idempotent) move on the next run. A transient Drive error fails the job (it is retried) and leaves the old row alone.
+
+**Output.** `moved old -> new` on stdout (next to `uploaded` and `updated`), `N moved` in the `syncd sync` summary. `syncd scan --dry-run --diff` and the `reconciled:` line of `run` preview likely moves, found without hashing (a new file and a missing row with the same inode and size, one each); the job confirms them by hash. `Plan.Moved` pairs leave the new and missing lists.
+
+**Folders.** Renaming a folder shows up as every file below it appearing at a new path, so each file is moved by its own job: the end state is right, at one Drive call per file, and the emptied old folder stays in Drive. Moving a folder as one operation is ticket 27.
+
+**Limits.** Matching is by inode, which is unique per filesystem and not stored with a device number; the hash makes a false match require an identical file. No match across filesystems or volumes. The code has no OS branch (Windows file IDs are used as inodes).
 
 ## Errors
 

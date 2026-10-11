@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
+	"os"
 	"path/filepath"
 	stdsync "sync"
 	"time"
@@ -22,7 +24,10 @@ type UploadFunc func(ctx context.Context, localPath, relPath string) (drive.File
 type Event struct {
 	RelPath string
 	Updated bool
-	Err     error
+	// MovedFrom is set when the file was a rename or move of a tracked file:
+	// RelPath is the new path and nothing was uploaded.
+	MovedFrom string
+	Err       error
 }
 
 // Summary counts what one Sync did.
@@ -30,6 +35,8 @@ type Summary struct {
 	// Uploaded counts new files; Updated counts changed files replaced in place.
 	Uploaded int
 	Updated  int
+	// Moved counts renamed or moved files, handled without an upload.
+	Moved int
 	// Synced counts files skipped because Drive already has their content.
 	Synced int
 	Failed int
@@ -59,11 +66,22 @@ func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc,
 	return SyncWorkers(ctx, root, repo, upload, report, 1)
 }
 
+// MoveFunc renames and moves the Drive file driveFileID to where newRel
+// belongs. A *drive.Uploader's Move method is the real one.
+type MoveFunc func(ctx context.Context, driveFileID, newRel string) (drive.FileInfo, error)
+
+// SyncOption tunes SyncWorkers.
+type SyncOption func(*runState)
+
+// WithMove lets the sync recognise a renamed or moved file (see tryMove) and
+// move it in Drive instead of uploading it again.
+func WithMove(m MoveFunc) SyncOption { return func(r *runState) { r.move = m } }
+
 // SyncWorkers is Sync with workers jobs in flight at once (at least 1). The
 // upload function must be safe for concurrent use when workers > 1; report is
 // never called concurrently. The first fatal error stops every worker, each
 // putting its job back in the queue, and is the error returned.
-func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, report func(Event), workers int) (Summary, error) {
+func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, report func(Event), workers int, opts ...SyncOption) (Summary, error) {
 	// No other process uses the database, so a job still marked running is
 	// one a dead process left behind.
 	if _, err := repo.ResetRunningJobs(ctx); err != nil {
@@ -74,6 +92,9 @@ func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload Uplo
 		return Summary{}, err
 	}
 	run := &runState{sum: Summary{Ignored: res.Ignored, Unreadable: res.Errors}, report: report}
+	for _, o := range opts {
+		o(run)
+	}
 	entries := make(map[string]Entry, len(res.Entries))
 	paths := make([]string, len(res.Entries))
 	for i, e := range res.Entries {
@@ -144,6 +165,7 @@ type runState struct {
 	mu     stdsync.Mutex
 	sum    Summary
 	report func(Event)
+	move   MoveFunc // nil: renames are uploaded as new files
 }
 
 // add updates the summary and, when e is not nil, reports it, in that order
@@ -281,6 +303,11 @@ func process(ctx context.Context, log *slog.Logger, root string, repo *store.Rep
 			return nil, nil
 		}
 	}
+	if !known && e.Inode != 0 && run.move != nil {
+		if done, fileErr, fatal := tryMove(ctx, log, root, repo, run, e); done {
+			return fileErr, fatal
+		}
+	}
 	info, err := upload(ctx, path, e.RelPath)
 	switch {
 	case err == nil:
@@ -319,6 +346,72 @@ func process(ctx context.Context, log *slog.Logger, root string, repo *store.Rep
 		run.add(func(s *Summary) { s.Failed++ }, &Event{RelPath: e.RelPath, Err: err})
 		return err, nil
 	}
+}
+
+// tryMove recognises a renamed or moved file and moves it in Drive instead of
+// uploading it again. e is a file with no usable row. It is a move of the
+// tracked file at another path when exactly one tracked row has e's inode, that
+// row's local file is gone, and e's content hashes to that row's synced MD5.
+// The inode is only a hint (reused after a delete, shared by hard links); the
+// hash and the vanished old path settle it. done is false when e is not a move
+// (or the Drive file is gone), and the caller uploads it as new. Otherwise
+// fileErr and fatal are the usual outcome of a job.
+func tryMove(ctx context.Context, log *slog.Logger, root string, repo *store.Repo, run *runState, e Entry) (done bool, fileErr, fatal error) {
+	cands, err := repo.FindByInode(ctx, e.Inode)
+	if err != nil {
+		return true, nil, err
+	}
+	var gone []store.File
+	for _, c := range cands {
+		if c.RelPath == e.RelPath || c.SyncedMD5 == "" {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(c.RelPath))); errors.Is(err, fs.ErrNotExist) {
+			gone = append(gone, c)
+		}
+	}
+	if len(gone) != 1 {
+		return false, nil, nil
+	}
+	from := gone[0]
+	sum, err := fileMD5(filepath.Join(root, filepath.FromSlash(e.RelPath)))
+	if err != nil || sum != from.SyncedMD5 {
+		return false, nil, nil // unreadable here (the upload will say so) or different content
+	}
+
+	info, err := run.move(ctx, from.DriveFileID, e.RelPath)
+	switch {
+	case err == nil:
+	case errors.Is(err, drive.ErrFileNotFound):
+		log.Info("renamed file's Drive file is gone, uploading as new", "from", from.RelPath, "drive_file_id", from.DriveFileID)
+		if err := repo.Delete(context.WithoutCancel(ctx), from.RelPath); err != nil && !errors.Is(err, store.ErrNotFound) {
+			return true, nil, err // the stale row would keep matching this inode
+		}
+		return false, nil, nil
+	case errors.Is(err, drive.ErrNotSignedIn), errors.Is(err, drive.ErrSessionExpired):
+		log.Error("sync aborted, sign-in lost", "err", err)
+		return true, nil, err
+	case ctx.Err() != nil:
+		return true, nil, ctx.Err()
+	default:
+		log.Warn("move failed", "from", from.RelPath, "drive_file_id", from.DriveFileID, "err", err)
+		run.add(func(s *Summary) { s.Failed++ }, &Event{RelPath: e.RelPath, Err: err})
+		return true, err, nil
+	}
+
+	to := from
+	to.Size, to.MTime, to.Inode, to.LocalMD5 = e.Size, e.MTime, e.Inode, sum
+	bg := context.WithoutCancel(ctx)
+	if err := repo.RenameFile(bg, from.RelPath, e.RelPath, to); err != nil {
+		log.Error("record failed", "drive_file_id", from.DriveFileID, "err", err)
+		return true, nil, fmt.Errorf("record %s: %w", e.RelPath, err)
+	}
+	if err := repo.ClearError(bg, from.RelPath); err != nil {
+		return true, nil, err
+	}
+	log.Info("moved", "from", from.RelPath, "drive_file_id", info.ID)
+	run.add(func(s *Summary) { s.Moved++ }, &Event{RelPath: e.RelPath, MovedFrom: from.RelPath})
+	return true, nil, nil
 }
 
 // record writes the row and, when Drive reported a head revision, its
