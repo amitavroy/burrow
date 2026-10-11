@@ -642,6 +642,8 @@ func TestWatchCommandErrors(t *testing.T) {
 		wantErr  string
 	}{
 		{"extra argument", []string{"watch", "x"}, 2, "usage: syncd watch"},
+		{"zero settle", []string{"watch", "--settle", "0s"}, 2, "usage: syncd watch"},
+		{"bad settle", []string{"watch", "--settle", "soon"}, 2, "invalid value"},
 		{"missing root", []string{"watch", "--root", filepath.Join(t.TempDir(), "nope")}, 1, "watch failed"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

@@ -103,10 +103,10 @@ Every uploaded file gets a row in the state database (see below). A file whose s
 ## Watching (preview)
 
 ```
-bin/syncd watch [--root DIR]   # prints create, write, rename and remove events under the root; Ctrl+C stops
+bin/syncd watch [--root DIR] [--settle 1s] [--raw]
 ```
 
-`watch` only shows what changed (new folders are picked up too, and ignored paths are skipped as in `scan`). It uploads nothing yet; live sync arrives with the next tickets.
+`watch` prints `ready <path>` once a file has stopped changing: it waits until the file has been quiet for `--settle` and its size and mtime match across two checks, so one editor save is one line and a big copy is one line after it finishes. `--raw` prints every create, write, rename and remove event instead. New folders are picked up too, and ignored paths are skipped as in `scan`. It uploads nothing yet; live sync arrives with the next tickets.
 
 ## Revision history
 

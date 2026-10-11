@@ -455,17 +455,19 @@ func formatWatchEvent(e burrowsync.WatchEvent) string {
 	return string(e.Op) + " " + p
 }
 
-// watchCmd prints the changes seen under the sync root until Ctrl+C. It is a
-// development aid: it needs no database and no sign-in.
+// watchCmd prints the files that have settled under the sync root (or, with
+// --raw, every event) until Ctrl+C. It is a development aid: it needs no database and no sign-in.
 func watchCmd(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	rootDir := fs.String("root", "", "sync root to watch (default ~/MySync)")
+	settle := fs.Duration("settle", time.Second, "how long a file must stay unchanged before it is ready")
+	raw := fs.Bool("raw", false, "print every raw event instead of debounced ready lines")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: syncd watch [--root DIR]")
+	if fs.NArg() != 0 || *settle <= 0 {
+		fmt.Fprintln(stderr, "usage: syncd watch [--root DIR] [--settle DURATION] [--raw]")
 		return 2
 	}
 	root, err := resolveRoot(*rootDir)
@@ -484,15 +486,34 @@ func watchCmd(args []string, stdout, stderr io.Writer) int {
 
 	slog.Info("watching", "root", root, "directories", w.Watching())
 	fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", w.Watching(), root)
+	if *raw {
+		for {
+			select {
+			case <-ctx.Done():
+				return 0
+			case e, ok := <-w.Events():
+				if !ok {
+					return 0
+				}
+				fmt.Fprintln(stdout, formatWatchEvent(e))
+			case err, ok := <-w.Errors():
+				if ok {
+					fmt.Fprintf(stderr, "syncd: watch error: %v\n", err)
+				}
+			}
+		}
+	}
+	d := burrowsync.NewDebouncer(w.Events(), root, *settle)
+	defer d.Close()
 	for {
 		select {
 		case <-ctx.Done():
 			return 0
-		case e, ok := <-w.Events():
+		case p, ok := <-d.Ready():
 			if !ok {
 				return 0
 			}
-			fmt.Fprintln(stdout, formatWatchEvent(e))
+			fmt.Fprintf(stdout, "ready %s\n", p)
 		case err, ok := <-w.Errors():
 			if ok {
 				fmt.Fprintf(stderr, "syncd: watch error: %v\n", err)

@@ -11,5 +11,6 @@
 // revision and a file_revisions entry. Watcher reports create, write, rename and
 // remove events under the root, recursively (fsnotify is not), including for
 // directories created later; it applies the same ignore rules and does no
-// debouncing.
+// debouncing. Debouncer sits behind it: one ready rel_path per file whose size
+// and mtime have stopped changing, so an editor save is one job.
 package sync

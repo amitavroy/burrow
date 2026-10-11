@@ -270,23 +270,25 @@ syncd sync [--root DIR] [--workers N]
 
 ## Watching
 
-`syncd watch [--root DIR]` prints every change under the sync root until Ctrl+C. It is the first piece of live sync: it only reports, and uploads nothing, touches no database and needs no sign-in. Later tickets debounce the events (20) and feed them to the job queue (21).
+`syncd watch [--root DIR] [--settle DURATION] [--raw]` prints the files that have settled under the sync root until Ctrl+C: one `ready <path>` line per save. With `--raw` it prints every event instead. It is the first piece of live sync: it only reports, and uploads nothing, touches no database and needs no sign-in. Feeding the ready paths to the job queue is ticket 21.
 
 ```
-$ syncd watch --root ~/MySync
+$ syncd watch --root ~/MySync          # an editor saves notes/todo.txt
 watching 14 directories under /home/me/MySync (Ctrl+C to stop)
+ready notes/todo.txt
+$ syncd watch --raw --root ~/MySync    # every event, as reported by the OS
+create notes/todo.txt.tmp
+write notes/todo.txt.tmp
+rename notes/todo.txt.tmp
 create notes/todo.txt
-write notes/todo.txt
-rename notes/todo.txt
-create notes/done.txt
-remove old/
 ```
 
 - **Code:** `sync.Watcher` (`internal/sync/watch.go`) on `github.com/fsnotify/fsnotify`. `NewWatcher(root)`, `Events()`, `Errors()`, `Watching()`, `Close()`. One goroutine reads fsnotify and owns the set of watched directories.
 - **Events:** `WatchEvent{RelPath, Op, IsDir}` with ops `create`, `write`, `rename`, `remove`. `RelPath` is slash-form relative to the root. A trailing `/` in the command output marks a directory. Chmod is dropped. A rename is the old path as `rename` plus the new path as `create`; pairing them is ticket 25.
 - **Recursive:** fsnotify watches one directory only, so the watcher walks the root at start and adds every directory, and adds each new directory when its create event arrives.
 - **Ignore rules:** the same `Matcher` as `scan` (defaults plus `.syncignore`, never `.git`). Ignored paths give no events and ignored directories are not watched, which also saves inotify watches. `.syncignore` is read once at start; edit it and restart.
-- **The new-folder race:** nothing is reported for a file created after its folder appears but before the folder is watched. So when a directory is created, its contents are walked and reported as `create` events (`mkdir -p a/b/c && touch a/b/c/f` loses nothing). A path can therefore be reported twice; debouncing (ticket 20) collapses that. A write that happened before the watch existed is reported only as the create.
+- **Debounce and stabilize** (`internal/sync/debounce.go`): `Debouncer` reads the watcher's events and delivers each settled file's rel_path on `Ready()`. One goroutine owns a timer per path. A `create` or `write` of a file starts or restarts its timer; `rename` and `remove` cancel it (a rename's new name arrives as its own `create`); directory events are ignored, since jobs are per file. When a timer fires, the file is `Lstat`ed: gone or not a regular file means the path is dropped silently. Otherwise (size, mtime) is sampled and the timer re-armed; only when the next sample, one settle period later, is equal is the path reported. A new event throws the sample away, and a changed sample waits again, so a file that is still being written or copied is reported once, after it stops growing. A file that never stops changing is never reported. Default settle is 1 s (`--settle`), so a save is reported about 2 s later. A timer that fires after a newer event is ignored by a generation number. Closing the watcher closes `Ready()`; paths still waiting are dropped, and the startup scan of ticket 22 finds them. Tests show one editor-style save (temp file renamed over the original) gives one ready path and one queued job.
+- **The new-folder race:** nothing is reported for a file created after its folder appears but before the folder is watched. So when a directory is created, its contents are walked and reported as `create` events (`mkdir -p a/b/c && touch a/b/c/f` loses nothing). A path can therefore be reported twice; the debounce collapses that. A write that happened before the watch existed is reported only as the create.
 - **Removed and renamed folders** drop their watches and those of everything below. On Linux the kernel watch follows the directory, so without this events inside a renamed folder would keep carrying the old name. The new name is walked and watched when its create arrives.
 - **Overflow:** if the OS queue overflows (`ErrEventOverflow`), the error comes out of `Errors()` and is logged at warn. Missed events are what the startup scan of ticket 22 recovers.
 - **Not here:** a clear `max_user_watches` message and panic recovery (ticket 23; until then the OS error names the directory it failed on), rename detection by inode and hash (25), symlinked folders (not followed, as in `scan`).
