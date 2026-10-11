@@ -944,6 +944,87 @@ func remoteGet(ctx context.Context, client drive.Client, u *drive.Uploader, args
 	return 0
 }
 
+// reportRestore prints one restore outcome: progress on stdout, failures on stderr.
+func reportRestore(stdout, stderr io.Writer) func(burrowsync.RestoreEvent) {
+	return func(e burrowsync.RestoreEvent) {
+		switch {
+		case e.Err != nil:
+			fmt.Fprintf(stderr, "failed %s: %v\n", e.RelPath, e.Err)
+		case e.Action == burrowsync.RestoreConflict:
+			fmt.Fprintf(stdout, "conflict %s (your version kept as %s)\n", e.RelPath, e.ConflictCopy)
+		default:
+			fmt.Fprintf(stdout, "%s %s\n", e.Action, e.RelPath)
+		}
+	}
+}
+
+// restoreCmd fills the sync root from Drive on a new machine: files that are
+// missing are downloaded, files that already match are only recorded, and
+// files with other content are kept as conflicted copies. Run `syncd run`
+// afterwards.
+func restoreCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	rootDir := fs.String("root", "", "sync root to fill from Drive (default ~/MySync; created if missing)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: syncd restore [--root DIR]")
+		return 2
+	}
+	root, err := resolveRoot(*rootDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: restore failed: %v\n", err)
+		return 1
+	}
+	client, err := drive.LoadClient()
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	lock, ok := lockDatabase("restore", stderr)
+	if !ok {
+		return 1
+	}
+	defer lock.Unlock()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	repo, err := store.OpenRepo(dbPath())
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: restore failed: %v\n", err)
+		return 1
+	}
+	defer repo.Close()
+
+	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
+	if err := loadSharedConfig(ctx, uploader, stderr); err != nil {
+		return reportDriveErr(stderr, "restore", err)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		fmt.Fprintf(stderr, "syncd: restore failed: %v\n", err)
+		return 1
+	}
+	remote, err := uploader.ListTree(ctx)
+	if err != nil {
+		return reportDriveErr(stderr, "restore", err)
+	}
+	host, _ := os.Hostname()
+	sum, err := burrowsync.Restore(ctx, root, repo, remote, uploader.Download, reportRestore(stdout, stderr), burrowsync.RestoreOptions{Host: host})
+	fmt.Fprintf(stderr, "%d downloaded, %d already there, %d kept as conflicted copies, %d failed\n", sum.Downloaded, sum.Matched, sum.Conflicts, sum.Failed)
+	switch {
+	case errors.Is(err, context.Canceled):
+		fmt.Fprintln(stderr, "syncd: restore interrupted; run it again to continue")
+		return 1
+	case err != nil:
+		return reportDriveErr(stderr, "restore", err)
+	case sum.Failed > 0:
+		return 1
+	}
+	fmt.Fprintln(stderr, "restored; run `syncd run` to keep syncing")
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -983,6 +1064,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return configCmd(args[1:], stdout, stderr)
 	case "remote":
 		return remoteCmd(args[1:], stdout, stderr)
+	case "restore":
+		return restoreCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2

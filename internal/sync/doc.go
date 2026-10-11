@@ -23,4 +23,5 @@
 // by inode and hash is moved in Drive (MoveFunc) instead of uploaded, and a
 // file deleted locally is moved to the Drive trash (TrashFunc). A renamed folder is
 // moved as a folder (MoveDirFunc) and an emptied, deleted one is trashed.
+// Restore fills a root from a Drive listing on a new machine.
 package sync

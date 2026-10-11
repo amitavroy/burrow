@@ -903,3 +903,23 @@ func TestRemoteCommand(t *testing.T) {
 		t.Errorf("untagged line = %q", got)
 	}
 }
+
+func TestRestoreCommandUsage(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"restore", "extra"}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage: syncd restore") {
+		t.Errorf("code = %d, stderr = %q", code, stderr.String())
+	}
+}
+
+func TestReportRestore(t *testing.T) {
+	var out, errb bytes.Buffer
+	rep := reportRestore(&out, &errb)
+	rep(burrowsync.RestoreEvent{RelPath: "a.txt", Action: burrowsync.RestoreDownloaded})
+	rep(burrowsync.RestoreEvent{RelPath: "b.txt", Action: burrowsync.RestoreMatched})
+	rep(burrowsync.RestoreEvent{RelPath: "c.txt", Action: burrowsync.RestoreConflict, ConflictCopy: "c (conflicted copy).txt"})
+	rep(burrowsync.RestoreEvent{RelPath: "d.txt", Action: burrowsync.RestoreFailed, Err: errors.New("boom")})
+	want := "downloaded a.txt\nmatched b.txt\nconflict c.txt (your version kept as c (conflicted copy).txt)\n"
+	if out.String() != want || errb.String() != "failed d.txt: boom\n" {
+		t.Errorf("stdout = %q, stderr = %q", out.String(), errb.String())
+	}
+}

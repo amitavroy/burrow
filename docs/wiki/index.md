@@ -526,11 +526,11 @@ notes/todo.txt  340  e4d909c290d0fb1ca068ffaddf22cbd0  1XyZ...
 - **Code:** `Uploader.ListTree` (`internal/drive/tree.go`), under the retry layer: it walks the folders from the `MySync` root, one `files.list` per folder (`'<id>' in parents and trashed = false`, 1000 per page, all pages), recursing into folders. Fields read: ID, name, MIME type, `md5Checksum`, `size`, `headRevisionId`, `appProperties`. With the `drive.file` scope that is exactly the files syncd created. A retry starts the walk over.
 - **Path:** the `rel_path` tag when present, else the folder path plus the name, marked `(no rel_path tag)` in the output; the tag is the safety net that survives a renamed Drive folder.
 - **Skipped:** folders, trashed files and the shared settings file (see Shared config). Native Google Docs have no MD5 or size; they would show 0 and an empty MD5, but syncd never creates them.
-- **Not done:** no tree view (the flat sorted list pipes and greps), and no comparison with the local folder (restore, ticket 31).
+- **Not done:** no tree view (the flat sorted list pipes and greps), and no comparison with the local folder (see Restore).
 
 ## Safe download
 
-A file is never visible half written: it is streamed into a temporary file, verified, and renamed into place. This is the one download primitive the restore command (ticket 31) and two-way sync (phase 2) build on.
+A file is never visible half written: it is streamed into a temporary file, verified, and renamed into place. This is the one download primitive the restore command (see Restore) and two-way sync (phase 2) build on.
 
 ```
 files.get?alt=media -> temp file in the target's folder (.burrow-*.tmp, 0600)
@@ -542,7 +542,30 @@ files.get?alt=media -> temp file in the target's folder (.burrow-*.tmp, 0600)
 - **Code:** `Uploader.Download(ctx, driveFileID, wantMD5, localPath)` (`internal/drive/download.go`), under the retry layer; a transient error restarts the download into a fresh temp file. Memory use is flat: the body is copied with `io.Copy` through the file and the hash.
 - **Same folder, `.tmp` name:** the temp file sits next to the target so the rename stays on one filesystem (that is what makes it atomic), and its `.tmp` suffix is ignored by default, so a running watcher never queues a half-written download. Missing parent folders are created. A failed or cancelled download removes its temp file.
 - **Expected MD5 is required:** the caller passes the `md5Checksum` it listed (`ListTree`, `FindByTags`); Drive files without one (native Google Docs) are refused rather than saved unverified. A mismatch usually means the file changed in Drive after it was listed; the caller lists again.
-- **Overwrite:** an existing target is replaced atomically. `Download` does not check for one, so the restore command must decide first (missing: download; same hash: skip; different: keep both).
+- **Overwrite:** an existing target is replaced atomically. `Download` does not check for one, so the restore command decides first (missing: download; same hash: skip; different: keep both).
 - **See it:** `syncd remote get <rel_path> [<local path>]` finds the file by its `rel_path` tag and downloads it (default: its base name in the current directory), printing `Downloaded a/b.txt to ./b.txt (12 bytes, md5 ...)`. `md5sum` on the result equals the MD5 in `syncd remote ls`.
 - **Not done:** no resume of a partial download (restarts from the beginning), no fsync of the folder after the rename, and no restore of the file's modification time.
+
+## Restore
+
+`syncd restore [--root DIR]` fills a sync root from Drive on a new machine (default `~/MySync`, created if missing). It joins the pieces above: sign in, the shared config, the remote listing, safe downloads. Run `syncd run` afterwards to keep syncing.
+
+```
+lock the database -> load config.json (ignore rules) -> ListTree
+for each remote file at <root>/<rel_path>:
+  missing                 -> download (verified, atomic) -> row
+  present, same MD5       -> row only, no transfer            "matched"
+  present, other content  -> rename local to "<name> (conflicted copy, <host>, <date>).<ext>"
+                             download Drive's version to <rel_path> -> row   "conflict"
+  anything else wrong     -> reported, counted, the rest go on  "failed"
+```
+
+- **Code:** `sync.Restore` (`internal/sync/restore.go`) takes the listing and a `DownloadFunc` (`Uploader.Download`), so it is tested with a fake. It runs one file at a time.
+- **Rows:** every restored or matched file gets its `files` row with the Drive ID, size, mtime, inode, and `local`, `synced` and `base` MD5 all equal to Drive's, `base_revision_id` from the listing, and a `file_revisions` row with source `download`. So the next `run` or `sync` finds nothing new or changed (a test checks `Diff`), and no file is uploaded again.
+- **Keep both:** the user's file is never overwritten. It is renamed in place to an unused conflicted-copy name (` 2`, ` 3` ... if the name is taken) and Drive's version takes the original path, so the path matches Drive and the copy is an ordinary new file that the next sync uploads. If the download fails, the local file is put back.
+- **Not trusted input:** Drive tags are data from outside. A `rel_path` that is absolute, has a `..`, `.` or empty component, or a backslash is refused (`unsafe path in Drive`), so a bad tag cannot write outside the root. A file with no MD5, a second file with the same `rel_path` (the first by ID wins), and a folder where a file belongs are reported as failed.
+- **Output:** `downloaded <path>`, `matched <path>`, `conflict <path> (your version kept as <copy>)` on stdout, `failed <path>: <why>` on stderr, then `N downloaded, M already there, K kept as conflicted copies, F failed`. Exit 1 if any failed (run it again; finished files are `matched`), if interrupted, or when the sign-in is lost.
+- **Safe to repeat:** a second restore finds every file matching and transfers nothing.
+- **Single process:** like `run` and `sync` it takes the database lock.
+- **Not done:** no parallel downloads, no restore of modification times (the row holds the time the file was written, which is what the scan compares), and the rebuild-and-compare end-to-end test is ticket 32.
 
