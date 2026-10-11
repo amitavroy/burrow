@@ -513,7 +513,7 @@ Folders are not jobs; they ride on the per-file jobs, so the file logic stays th
 
 ## Remote listing
 
-`syncd remote ls` prints what Drive holds under `MySync/`, the first half of the restore flow (the next tickets download and match it). It needs sign-in and reads Drive only.
+`syncd remote ls` prints what Drive holds under `MySync/`, the first half of the restore flow (see Safe download for the second). It needs sign-in and reads Drive only.
 
 ```
 $ syncd remote ls
@@ -527,4 +527,22 @@ notes/todo.txt  340  e4d909c290d0fb1ca068ffaddf22cbd0  1XyZ...
 - **Path:** the `rel_path` tag when present, else the folder path plus the name, marked `(no rel_path tag)` in the output; the tag is the safety net that survives a renamed Drive folder.
 - **Skipped:** folders, trashed files and the shared settings file (see Shared config). Native Google Docs have no MD5 or size; they would show 0 and an empty MD5, but syncd never creates them.
 - **Not done:** no tree view (the flat sorted list pipes and greps), and no comparison with the local folder (restore, ticket 31).
+
+## Safe download
+
+A file is never visible half written: it is streamed into a temporary file, verified, and renamed into place. This is the one download primitive the restore command (ticket 31) and two-way sync (phase 2) build on.
+
+```
+files.get?alt=media -> temp file in the target's folder (.burrow-*.tmp, 0600)
+  -> md5 computed while writing -> compare with the expected MD5
+       mismatch: remove temp, ErrChecksumMismatch, target untouched
+       match:    chmod 0644, fsync, close, rename over the target (atomic)
+```
+
+- **Code:** `Uploader.Download(ctx, driveFileID, wantMD5, localPath)` (`internal/drive/download.go`), under the retry layer; a transient error restarts the download into a fresh temp file. Memory use is flat: the body is copied with `io.Copy` through the file and the hash.
+- **Same folder, `.tmp` name:** the temp file sits next to the target so the rename stays on one filesystem (that is what makes it atomic), and its `.tmp` suffix is ignored by default, so a running watcher never queues a half-written download. Missing parent folders are created. A failed or cancelled download removes its temp file.
+- **Expected MD5 is required:** the caller passes the `md5Checksum` it listed (`ListTree`, `FindByTags`); Drive files without one (native Google Docs) are refused rather than saved unverified. A mismatch usually means the file changed in Drive after it was listed; the caller lists again.
+- **Overwrite:** an existing target is replaced atomically. `Download` does not check for one, so the restore command must decide first (missing: download; same hash: skip; different: keep both).
+- **See it:** `syncd remote get <rel_path> [<local path>]` finds the file by its `rel_path` tag and downloads it (default: its base name in the current directory), printing `Downloaded a/b.txt to ./b.txt (12 bytes, md5 ...)`. `md5sum` on the result equals the MD5 in `syncd remote ls`.
+- **Not done:** no resume of a partial download (restarts from the beginning), no fsync of the folder after the rename, and no restore of the file's modification time.
 

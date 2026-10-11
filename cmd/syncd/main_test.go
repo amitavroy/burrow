@@ -890,9 +890,9 @@ func TestEditIgnore(t *testing.T) {
 }
 
 func TestRemoteCommand(t *testing.T) {
-	for _, args := range [][]string{{"remote"}, {"remote", "ls", "x"}, {"remote", "rm"}} {
+	for _, args := range [][]string{{"remote"}, {"remote", "ls", "x"}, {"remote", "rm"}, {"remote", "get"}, {"remote", "get", "a", "b", "c"}} {
 		var stdout, stderr bytes.Buffer
-		if code := run(args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage: syncd remote ls") {
+		if code := run(args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage: syncd remote ls | syncd remote get") {
 			t.Errorf("%v: code = %d, stderr = %q", args, code, stderr.String())
 		}
 	}

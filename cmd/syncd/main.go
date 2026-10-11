@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"runtime/debug"
 	"slices"
@@ -888,10 +889,15 @@ func formatRemote(f drive.RemoteFile) string {
 	return line
 }
 
-// remoteCmd lists what Drive holds under MySync: one line per file.
+// remoteCmd works with what Drive holds under MySync: `ls` lists it, `get`
+// downloads one file by its rel_path.
 func remoteCmd(args []string, stdout, stderr io.Writer) int {
-	if len(args) != 1 || args[0] != "ls" {
-		fmt.Fprintln(stderr, "usage: syncd remote ls")
+	const usage = "usage: syncd remote ls | syncd remote get <rel_path> [<local path>]"
+	switch {
+	case len(args) == 1 && args[0] == "ls":
+	case (len(args) == 2 || len(args) == 3) && args[0] == "get":
+	default:
+		fmt.Fprintln(stderr, usage)
 		return 2
 	}
 	client, err := drive.LoadClient()
@@ -901,7 +907,11 @@ func remoteCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	files, err := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, nil).ListTree(ctx)
+	u := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, nil)
+	if args[0] == "get" {
+		return remoteGet(ctx, client, u, args[1:], stdout, stderr)
+	}
+	files, err := u.ListTree(ctx)
 	if err != nil {
 		return reportDriveErr(stderr, "remote ls", err)
 	}
@@ -909,6 +919,28 @@ func remoteCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, formatRemote(f))
 	}
 	fmt.Fprintf(stderr, "%d files\n", len(files))
+	return 0
+}
+
+// remoteGet downloads the Drive file tagged rel to dest (default: its base
+// name in the current directory), verified against Drive's MD5.
+func remoteGet(ctx context.Context, client drive.Client, u *drive.Uploader, args []string, stdout, stderr io.Writer) int {
+	rel, dest := args[0], path.Base(args[0])
+	if len(args) == 2 {
+		dest = args[1]
+	}
+	info, err := drive.FindByTags(ctx, client, drive.KeyringStore{}, rel)
+	if errors.Is(err, drive.ErrFileNotFound) {
+		fmt.Fprintf(stderr, "syncd: no file %q in Drive\n", rel)
+		return 1
+	}
+	if err != nil {
+		return reportDriveErr(stderr, "remote get", err)
+	}
+	if err := u.Download(ctx, info.ID, info.MD5, dest); err != nil {
+		return reportDriveErr(stderr, "remote get", err)
+	}
+	fmt.Fprintf(stdout, "Downloaded %s to %s (%d bytes, md5 %s)\n", rel, dest, info.Size, info.MD5)
 	return 0
 }
 

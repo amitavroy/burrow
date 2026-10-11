@@ -109,6 +109,8 @@ Every uploaded file gets a row in the state database (see below). A file whose s
 
 `syncd remote ls` prints every file under `MySync/` in Drive: `rel_path`, size, MD5 and Drive file ID, one per line, sorted by path (the count goes to stderr). It needs sign-in and does not touch the local folder or database.
 
+`syncd remote get <rel_path> [<local path>]` downloads one file. It is written to a temporary `.tmp` file next to the target, checked against Drive's MD5 and then renamed into place, so you never see a partial file; on a mismatch nothing is written. An existing target is replaced.
+
 ## Running live
 
 ```
