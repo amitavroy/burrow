@@ -8,5 +8,8 @@
 // its streamed MD5 match the row, and is replaced in place when its content
 // changed. Sync logs through slog.Default with path, job and drive_file_id
 // attributes, never file contents. Each successful upload records the file's base MD5 and Drive
-// revision and a file_revisions entry.
+// revision and a file_revisions entry. Watcher reports create, write, rename and
+// remove events under the root, recursively (fsnotify is not), including for
+// directories created later; it applies the same ignore rules and does no
+// debouncing.
 package sync

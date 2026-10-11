@@ -14,6 +14,7 @@ import (
 
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
+	burrowsync "github.com/amitavroy/burrow/internal/sync"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/oauth2"
 )
@@ -614,5 +615,40 @@ func TestErrorsCommand(t *testing.T) {
 	stderr.Reset()
 	if code := run([]string{"errors", "x"}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage: syncd errors") {
 		t.Errorf("extra arg: code = %d, stderr = %q", code, stderr.String())
+	}
+}
+
+func TestFormatWatchEvent(t *testing.T) {
+	for _, tt := range []struct {
+		e    burrowsync.WatchEvent
+		want string
+	}{
+		{burrowsync.WatchEvent{RelPath: "a/b.txt", Op: burrowsync.OpCreate}, "create a/b.txt"},
+		{burrowsync.WatchEvent{RelPath: "old", Op: burrowsync.OpRemove, IsDir: true}, "remove old/"},
+		{burrowsync.WatchEvent{RelPath: "n.txt", Op: burrowsync.OpWrite}, "write n.txt"},
+		{burrowsync.WatchEvent{RelPath: "n.txt", Op: burrowsync.OpRename}, "rename n.txt"},
+	} {
+		if got := formatWatchEvent(tt.e); got != tt.want {
+			t.Errorf("got %q, want %q", got, tt.want)
+		}
+	}
+}
+
+func TestWatchCommandErrors(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		args     []string
+		wantCode int
+		wantErr  string
+	}{
+		{"extra argument", []string{"watch", "x"}, 2, "usage: syncd watch"},
+		{"missing root", []string{"watch", "--root", filepath.Join(t.TempDir(), "nope")}, 1, "watch failed"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run(tt.args, &stdout, &stderr); code != tt.wantCode || !strings.Contains(stderr.String(), tt.wantErr) {
+				t.Errorf("code = %d, stderr = %q", code, stderr.String())
+			}
+		})
 	}
 }

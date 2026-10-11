@@ -268,6 +268,30 @@ syncd sync [--root DIR] [--workers N]
 - Only one `syncd` may use the database at a time; the reset of `running` jobs relies on it.
 - Not here: the watcher feeding the queue (tickets 19 to 21), delete and rename jobs (25 to 27), run-wide rate limiting.
 
+## Watching
+
+`syncd watch [--root DIR]` prints every change under the sync root until Ctrl+C. It is the first piece of live sync: it only reports, and uploads nothing, touches no database and needs no sign-in. Later tickets debounce the events (20) and feed them to the job queue (21).
+
+```
+$ syncd watch --root ~/MySync
+watching 14 directories under /home/me/MySync (Ctrl+C to stop)
+create notes/todo.txt
+write notes/todo.txt
+rename notes/todo.txt
+create notes/done.txt
+remove old/
+```
+
+- **Code:** `sync.Watcher` (`internal/sync/watch.go`) on `github.com/fsnotify/fsnotify`. `NewWatcher(root)`, `Events()`, `Errors()`, `Watching()`, `Close()`. One goroutine reads fsnotify and owns the set of watched directories.
+- **Events:** `WatchEvent{RelPath, Op, IsDir}` with ops `create`, `write`, `rename`, `remove`. `RelPath` is slash-form relative to the root. A trailing `/` in the command output marks a directory. Chmod is dropped. A rename is the old path as `rename` plus the new path as `create`; pairing them is ticket 25.
+- **Recursive:** fsnotify watches one directory only, so the watcher walks the root at start and adds every directory, and adds each new directory when its create event arrives.
+- **Ignore rules:** the same `Matcher` as `scan` (defaults plus `.syncignore`, never `.git`). Ignored paths give no events and ignored directories are not watched, which also saves inotify watches. `.syncignore` is read once at start; edit it and restart.
+- **The new-folder race:** nothing is reported for a file created after its folder appears but before the folder is watched. So when a directory is created, its contents are walked and reported as `create` events (`mkdir -p a/b/c && touch a/b/c/f` loses nothing). A path can therefore be reported twice; debouncing (ticket 20) collapses that. A write that happened before the watch existed is reported only as the create.
+- **Removed and renamed folders** drop their watches and those of everything below. On Linux the kernel watch follows the directory, so without this events inside a renamed folder would keep carrying the old name. The new name is walked and watched when its create arrives.
+- **Overflow:** if the OS queue overflows (`ErrEventOverflow`), the error comes out of `Errors()` and is logged at warn. Missed events are what the startup scan of ticket 22 recovers.
+- **Not here:** a clear `max_user_watches` message and panic recovery (ticket 23; until then the OS error names the directory it failed on), rename detection by inode and hash (25), symlinked folders (not followed, as in `scan`).
+- Linux inotify has a per-user watch limit (`fs.inotify.max_user_watches`, often 8192 to 65536); a very large tree can hit it.
+
 ## Errors
 
 A file that fails to sync leaves a row in the `sync_errors` table, so the user (and later the tray UI) can read what is wrong without parsing logs. `syncd errors` prints it.

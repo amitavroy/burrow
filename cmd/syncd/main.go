@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -307,14 +308,10 @@ func scan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: syncd scan --dry-run [--root DIR]")
 		return 2
 	}
-	root := *rootDir
-	if root == "" {
-		home, err := homeDir()
-		if err != nil {
-			fmt.Fprintf(stderr, "syncd: scan failed: %v\n", err)
-			return 1
-		}
-		root = filepath.Join(home, "MySync")
+	root, err := resolveRoot(*rootDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: scan failed: %v\n", err)
+		return 1
 	}
 
 	res, err := burrowsync.Scan(root)
@@ -332,6 +329,18 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// resolveRoot returns dir, or ~/MySync when dir is empty.
+func resolveRoot(dir string) (string, error) {
+	if dir != "" {
+		return dir, nil
+	}
+	home, err := homeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "MySync"), nil
+}
+
 // syncCmd uploads every file under the sync root to Drive, several at a time.
 // Files already recorded in the state database are skipped. Per-file failures
 // are reported and make the exit code 1; a lost sign-in or Ctrl+C stops the run.
@@ -347,14 +356,10 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "usage: syncd sync [--root DIR] [--workers N]  (N is 1 to 16)")
 		return 2
 	}
-	root := *rootDir
-	if root == "" {
-		home, err := homeDir()
-		if err != nil {
-			fmt.Fprintf(stderr, "syncd: sync failed: %v\n", err)
-			return 1
-		}
-		root = filepath.Join(home, "MySync")
+	root, err := resolveRoot(*rootDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: sync failed: %v\n", err)
+		return 1
 	}
 	client, err := drive.LoadClient()
 	if err != nil {
@@ -440,6 +445,62 @@ func history(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// formatWatchEvent is one line of `syncd watch` output: the operation, then the
+// path, with a trailing slash on a directory.
+func formatWatchEvent(e burrowsync.WatchEvent) string {
+	p := e.RelPath
+	if e.IsDir {
+		p += "/"
+	}
+	return string(e.Op) + " " + p
+}
+
+// watchCmd prints the changes seen under the sync root until Ctrl+C. It is a
+// development aid: it needs no database and no sign-in.
+func watchCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("watch", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	rootDir := fs.String("root", "", "sync root to watch (default ~/MySync)")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: syncd watch [--root DIR]")
+		return 2
+	}
+	root, err := resolveRoot(*rootDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: watch failed: %v\n", err)
+		return 1
+	}
+	w, err := burrowsync.NewWatcher(root)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: watch failed: %v\n", err)
+		return 1
+	}
+	defer w.Close()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	slog.Info("watching", "root", root, "directories", w.Watching())
+	fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", w.Watching(), root)
+	for {
+		select {
+		case <-ctx.Done():
+			return 0
+		case e, ok := <-w.Events():
+			if !ok {
+				return 0
+			}
+			fmt.Fprintln(stdout, formatWatchEvent(e))
+		case err, ok := <-w.Errors():
+			if ok {
+				fmt.Fprintf(stderr, "syncd: watch error: %v\n", err)
+			}
+		}
+	}
+}
+
 // errorsCmd lists the files that are failing to sync, newest first. It reads
 // the state database only; no Drive call or sign-in is needed.
 func errorsCmd(args []string, stdout, stderr io.Writer) int {
@@ -502,6 +563,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return syncCmd(args[1:], stdout, stderr)
 	case "history":
 		return history(args[1:], stdout, stderr)
+	case "watch":
+		return watchCmd(args[1:], stdout, stderr)
 	case "errors":
 		return errorsCmd(args[1:], stdout, stderr)
 	default:

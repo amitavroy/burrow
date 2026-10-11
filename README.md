@@ -99,6 +99,15 @@ The root defaults to `~/MySync`. Each file is uploaded into the Drive folder tha
 
 Every uploaded file gets a row in the state database (see below). A file whose size and mtime match its row is skipped without being read; otherwise it is hashed (MD5) and skipped if Drive already has that content, or replaced in place (same Drive file ID) if not. So a second run uploads nothing, touching a file uploads nothing, editing one file updates only that file, and an interrupted run (Ctrl+C) continues where it stopped. The database is disposable: delete `burrow.db` and the next run finds each file in Drive by its path and updates it in place, without duplicates. `sync` needs the database, so it stops with an error if it cannot open.
 
+
+## Watching (preview)
+
+```
+bin/syncd watch [--root DIR]   # prints create, write, rename and remove events under the root; Ctrl+C stops
+```
+
+`watch` only shows what changed (new folders are picked up too, and ignored paths are skipped as in `scan`). It uploads nothing yet; live sync arrives with the next tickets.
+
 ## Revision history
 
 ```
