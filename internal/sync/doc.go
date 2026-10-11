@@ -14,5 +14,6 @@
 // debouncing. Debouncer sits behind it: one ready rel_path per file whose size
 // and mtime have stopped changing, so an editor save is one job. Run joins
 // Watcher, Debouncer, the job queue and the workers into the foreground
-// daemon behind syncd run.
+// daemon behind syncd run. Diff and Reconcile compare the root with the files
+// table, so Run queues what changed while it was stopped.
 package sync

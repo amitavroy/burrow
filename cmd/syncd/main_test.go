@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -655,5 +656,74 @@ func TestWatchCommandErrors(t *testing.T) {
 				t.Errorf("code = %d, stderr = %q", code, stderr.String())
 			}
 		})
+	}
+}
+
+func TestScanDiff(t *testing.T) {
+	root := t.TempDir()
+	dbFile := filepath.Join(t.TempDir(), "burrow.db")
+	oldDB := dbPath
+	dbPath = func() string { return dbFile }
+	t.Cleanup(func() { dbPath = oldDB })
+	mk := func(rel, content string) {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("same.txt", "same")
+	mk("edit.txt", "v1")
+	repo, err := store.OpenRepo(dbFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{"same.txt", "edit.txt"} {
+		st, _ := os.Stat(filepath.Join(root, rel))
+		if err := repo.Upsert(context.Background(), store.File{RelPath: rel, DriveFileID: "id-" + rel, Size: st.Size(), MTime: st.ModTime().UnixNano()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = repo.Upsert(context.Background(), store.File{RelPath: "gone.txt", DriveFileID: "id2", Size: 1, MTime: 1})
+	repo.Close()
+	mk("edit.txt", "v2, longer")
+	mk("b/new.txt", "n")
+	mk("a.tmp", "ignored")
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"scan", "--dry-run", "--diff", "--root", root}, &stdout, &stderr)
+
+	if code != 0 || stdout.String() != "new b/new.txt\nchanged edit.txt\nmissing gone.txt\n" {
+		t.Errorf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "1 new, 1 changed, 1 unchanged, 1 missing, 1 ignored") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+
+	// Looking changed nothing: no jobs, and plain --dry-run still works without the database.
+	repo, _ = store.OpenRepo(dbFile)
+	defer repo.Close()
+	if n, _ := repo.CountJobs(context.Background()); n != 0 {
+		t.Errorf("--diff queued %d jobs", n)
+	}
+	stderr.Reset()
+	if code := run([]string{"scan", "--diff", "--root", root}, &stdout, &stderr); code != 2 {
+		t.Errorf("--diff without --dry-run: code = %d, want 2", code)
+	}
+}
+
+func TestReportReconcile(t *testing.T) {
+	var out bytes.Buffer
+	p := burrowsync.Plan{New: []string{"a"}, Changed: []string{"b", "c"}, Unchanged: 7}
+	for i := range 12 {
+		p.Missing = append(p.Missing, fmt.Sprintf("m%02d", i))
+	}
+	reportReconcile(&out, p)
+	got := out.String()
+	if !strings.HasPrefix(got, "reconciled: 1 new, 2 changed, 7 unchanged, 12 missing locally\n") ||
+		!strings.Contains(got, "  missing: m09\n") || strings.Contains(got, "m10") || !strings.Contains(got, "  ...and 2 more\n") {
+		t.Errorf("output = %q", got)
 	}
 }

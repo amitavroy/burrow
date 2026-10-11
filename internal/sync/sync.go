@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"path/filepath"
-	"strings"
 	stdsync "sync"
 	"time"
 
@@ -117,15 +115,10 @@ func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload Uplo
 func noteScanErrors(ctx context.Context, root string, repo *store.Repo, res Result, entries map[string]Entry) error {
 	unreadable := map[string]bool{}
 	for _, serr := range res.Errors {
-		var pe *fs.PathError
-		if !errors.As(serr, &pe) {
+		rel, ok := relOfError(root, serr)
+		if !ok {
 			continue
 		}
-		rel, err := filepath.Rel(root, pe.Path)
-		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
-			continue
-		}
-		rel = filepath.ToSlash(rel)
 		unreadable[rel] = true
 		if err := repo.RecordError(ctx, rel, drive.Describe(serr), serr.Error()); err != nil {
 			return err

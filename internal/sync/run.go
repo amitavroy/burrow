@@ -24,6 +24,9 @@ type RunOptions struct {
 	// queue overflow, a folder that could not be watched); the run goes on.
 	OnStart      func(dirs int)
 	OnWatchError func(error)
+	// OnReconcile is called once with what the startup scan found, before the
+	// workers start.
+	OnReconcile func(Plan)
 }
 
 func (o *RunOptions) defaults() {
@@ -44,8 +47,8 @@ func (o *RunOptions) defaults() {
 // Run watches root and uploads what changes until ctx is cancelled, which is a
 // normal stop (it returns nil). The pipeline is Watcher -> Debouncer -> job
 // queue -> workers, the same workers and job rules as Sync. Jobs left over
-// from an earlier run are processed first; there is no scan of the root (that
-// is startup reconciliation). Jobs that failed are queued again every
+// from an earlier run are processed first, then the root is reconciled with
+// the files table (Reconcile) so changes made while stopped are queued. Jobs that failed are queued again every
 // RetryEvery. A cancel puts the jobs in flight back in the queue. It returns an
 // error, after the same requeueing, when the sign-in is gone
 // (drive.ErrNotSignedIn or drive.ErrSessionExpired), when repo fails, or when
@@ -70,6 +73,20 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 	defer d.Close()
 	if opts.OnStart != nil {
 		opts.OnStart(w.Watching())
+	}
+	// The watcher is already running, so a change made during the walk is seen
+	// by one or the other (or both, which is still one job).
+	plan, err := Reconcile(ctx, root, repo)
+	if err != nil {
+		return err
+	}
+	slog.Info("reconciled", "new", len(plan.New), "changed", len(plan.Changed),
+		"unchanged", plan.Unchanged, "missing", len(plan.Missing))
+	for _, m := range plan.Missing {
+		slog.Info("missing locally, not in Drive trash yet", "path", m)
+	}
+	if opts.OnReconcile != nil {
+		opts.OnReconcile(plan)
 	}
 
 	parent := ctx

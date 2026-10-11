@@ -106,7 +106,7 @@ Every uploaded file gets a row in the state database (see below). A file whose s
 bin/syncd run [--root DIR] [--workers N] [--settle 1s]   # Ctrl+C to stop
 ```
 
-`run` watches the sync root and uploads each file a couple of seconds after you stop changing it: the foreground version of the daemon. It prints `uploaded <path>` / `updated <path>` / `failed <path>: ...` lines like `sync`, finishes jobs left over from an earlier run first, tries failed uploads again every 5 minutes, and on Ctrl+C leaves unfinished uploads queued. It does not scan the root at start (a file changed while it was stopped needs `syncd sync` for now), and renames and deletes are not propagated yet. Use only one of `run` and `sync` at a time.
+`run` watches the sync root and uploads each file a couple of seconds after you stop changing it: the foreground version of the daemon. It prints `uploaded <path>` / `updated <path>` / `failed <path>: ...` lines like `sync`, finishes jobs left over from an earlier run first, tries failed uploads again every 5 minutes, and on Ctrl+C leaves unfinished uploads queued. At start it compares the root with the state database and queues files that are new or changed since the last run, so edits made while it was stopped are uploaded (`syncd scan --dry-run --diff` previews that list; files gone locally are only reported, not removed from Drive). Renames and deletes are not propagated yet. Use only one of `run` and `sync` at a time.
 
 ## Watching (preview)
 

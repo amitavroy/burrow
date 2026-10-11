@@ -310,3 +310,90 @@ func TestRunMissingRootIsAnError(t *testing.T) {
 		t.Fatal("want an error for a missing root")
 	}
 }
+
+// The ticket checkpoint: files changed while stopped sync on the next start.
+func TestRunReconcilesChangesMadeWhileStopped(t *testing.T) {
+	root := t.TempDir()
+	repo := openRepo(t)
+	write(t, filepath.Join(root, "keep.txt"), "keep")
+	write(t, filepath.Join(root, "edit.txt"), "v1")
+	synced(t, repo, root, "keep.txt")
+	synced(t, repo, root, "edit.txt")
+
+	// "Stopped": change things with no run going.
+	write(t, filepath.Join(root, "edit.txt"), "v2, edited while stopped")
+	write(t, filepath.Join(root, "added/new.txt"), "added while stopped")
+
+	fd := &fakeDrive{}
+	var plan Plan
+	started := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, root, repo, fd.upload, func(Event) {}, RunOptions{
+			Settle: 40 * time.Millisecond, PollEvery: 20 * time.Millisecond,
+			OnReconcile: func(p Plan) { plan = p; close(started) },
+		})
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("no reconcile")
+	}
+
+	eventually(t, "both changes uploaded", func() bool { return fd.count("edit.txt") == 1 && fd.count("added/new.txt") == 1 })
+	stays(t, "nothing else is uploaded", 400*time.Millisecond, func() bool { return fd.total() == 2 })
+	if len(plan.New) != 1 || len(plan.Changed) != 1 || plan.Unchanged != 1 {
+		t.Errorf("plan = %+v", plan)
+	}
+}
+
+func TestRunRestartWithNoChangesUploadsNothing(t *testing.T) {
+	root := t.TempDir()
+	repo := openRepo(t)
+	write(t, filepath.Join(root, "a.txt"), "a")
+	synced(t, repo, root, "a.txt")
+	fd := &fakeDrive{}
+
+	r := startRun(t, root, repo, fd, RunOptions{})
+
+	stays(t, "no uploads", 400*time.Millisecond, func() bool { return fd.total() == 0 })
+	_ = r
+}
+
+// A file whose last upload failed is retried on the next start: its row is missing, so it is new.
+func TestRunStartRetriesAFileThatFailedLastTime(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := openRepo(t)
+	write(t, filepath.Join(root, "a.txt"), "a")
+	_ = repo.EnqueueJobs(ctx, []string{"a.txt"})
+	j, _ := repo.ClaimJob(ctx)
+	_ = repo.FailJob(ctx, j.ID, "network problem")
+	fd := &fakeDrive{}
+
+	startRun(t, root, repo, fd, RunOptions{})
+
+	eventually(t, "retry on start", func() bool { return fd.count("a.txt") == 1 })
+}
+
+// A file created after the watcher is up but before the reconcile has queued
+// anything is uploaded exactly once, whether the watcher, the scan or both saw it.
+func TestRunFileCreatedDuringStartIsUploadedOnce(t *testing.T) {
+	root := t.TempDir()
+	repo := openRepo(t)
+	fd := &fakeDrive{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Run(ctx, root, repo, fd.upload, func(Event) {}, RunOptions{
+			Settle: 40 * time.Millisecond, PollEvery: 20 * time.Millisecond,
+			OnStart: func(int) { write(t, filepath.Join(root, "racy.txt"), "created between watch and scan") },
+		})
+	}()
+	t.Cleanup(func() { cancel(); <-done })
+
+	eventually(t, "upload", func() bool { return fd.count("racy.txt") >= 1 })
+	stays(t, "exactly one upload", 500*time.Millisecond, func() bool { return fd.count("racy.txt") == 1 })
+}

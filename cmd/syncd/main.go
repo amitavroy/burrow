@@ -301,17 +301,21 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	dryRun := fs.Bool("dry-run", false, "list the files that would upload, without uploading")
 	rootDir := fs.String("root", "", "sync root to scan (default ~/MySync)")
+	diff := fs.Bool("diff", false, "compare with the state database: list new, changed and missing files")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if !*dryRun || fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: syncd scan --dry-run [--root DIR]")
+		fmt.Fprintln(stderr, "usage: syncd scan --dry-run [--diff] [--root DIR]")
 		return 2
 	}
 	root, err := resolveRoot(*rootDir)
 	if err != nil {
 		fmt.Fprintf(stderr, "syncd: scan failed: %v\n", err)
 		return 1
+	}
+	if *diff {
+		return scanDiff(root, stdout, stderr)
 	}
 
 	res, err := burrowsync.Scan(root)
@@ -403,6 +407,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", dirs, root)
 		},
 		OnWatchError: func(err error) { fmt.Fprintf(stderr, "syncd: watch error: %v\n", err) },
+		OnReconcile:  func(p burrowsync.Plan) { reportReconcile(stderr, p) },
 	})
 	if err != nil {
 		if errors.Is(err, drive.ErrNotSignedIn) || errors.Is(err, drive.ErrSessionExpired) {
@@ -413,6 +418,55 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stderr, "syncd: stopped; unfinished uploads stay queued")
 	return 0
+}
+
+// scanDiff prints what `syncd run` would queue on its next start: files that
+// are new or changed since the last sync, and files that are gone. It reads
+// the state database and changes nothing.
+func scanDiff(root string, stdout, stderr io.Writer) int {
+	repo, err := store.OpenRepo(dbPath())
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: scan failed: %v\n", err)
+		return 1
+	}
+	defer repo.Close()
+	plan, err := burrowsync.Diff(root, repo)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: scan failed: %v\n", err)
+		return 1
+	}
+	for _, p := range plan.New {
+		fmt.Fprintln(stdout, "new", p)
+	}
+	for _, p := range plan.Changed {
+		fmt.Fprintln(stdout, "changed", p)
+	}
+	for _, p := range plan.Missing {
+		fmt.Fprintln(stdout, "missing", p)
+	}
+	for _, e := range plan.Unreadable {
+		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
+	}
+	fmt.Fprintf(stderr, "%d new, %d changed, %d unchanged, %d missing, %d ignored\n",
+		len(plan.New), len(plan.Changed), plan.Unchanged, len(plan.Missing), plan.Ignored)
+	return 0
+}
+
+// reportReconcile prints the outcome of the startup scan of `syncd run`: the
+// counts, then up to 10 files that are gone locally.
+func reportReconcile(stderr io.Writer, p burrowsync.Plan) {
+	fmt.Fprintf(stderr, "reconciled: %d new, %d changed, %d unchanged, %d missing locally\n",
+		len(p.New), len(p.Changed), p.Unchanged, len(p.Missing))
+	for i, m := range p.Missing {
+		if i == 10 {
+			fmt.Fprintf(stderr, "  ...and %d more\n", len(p.Missing)-10)
+			break
+		}
+		fmt.Fprintf(stderr, "  missing: %s\n", m)
+	}
+	for _, e := range p.Unreadable {
+		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
+	}
 }
 
 // syncCmd uploads every file under the sync root to Drive, several at a time.
