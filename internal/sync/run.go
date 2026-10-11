@@ -18,6 +18,7 @@ type RunOptions struct {
 	Settle     time.Duration // debounce settle period; default 1s
 	RetryEvery time.Duration // failed jobs go back to pending this often; default 5m
 	Move       MoveFunc      // moves a renamed file in Drive instead of uploading it; nil: no move detection
+	MoveDir    MoveDirFunc   // moves a renamed folder in Drive; nil: files move one by one
 	Trash      TrashFunc     // trashes the Drive file of a deleted file; nil: deletes are not propagated
 	PollEvery  time.Duration // an idle worker looks for work at least this often; default 1s
 
@@ -106,7 +107,7 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 			}
 		}
 	}
-	state := &runState{report: report, move: opts.Move, trash: opts.Trash}
+	state := &runState{report: report, move: opts.Move, moveDir: opts.MoveDir, trash: opts.Trash}
 
 	// Ready paths become jobs.
 	wg.Add(1)

@@ -21,5 +21,6 @@
 // the saved rows carry the file's inode (Unix) or file ID (Windows), read by
 // fileID, for rename detection: a new file that matches a vanished tracked file
 // by inode and hash is moved in Drive (MoveFunc) instead of uploaded, and a
-// file deleted locally is moved to the Drive trash (TrashFunc).
+// file deleted locally is moved to the Drive trash (TrashFunc). A renamed folder is
+// moved as a folder (MoveDirFunc) and an emptied, deleted one is trashed.
 package sync

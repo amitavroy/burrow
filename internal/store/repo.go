@@ -412,6 +412,53 @@ ON CONFLICT(rel_dir) DO UPDATE SET drive_folder_id = excluded.drive_folder_id`, 
 	return nil
 }
 
+// RenameFolders moves the cached folder rel_dir from, and every cached folder
+// below it, to the same place under to. Cached entries already at or below to
+// are dropped first.
+func (r *Repo) RenameFolders(ctx context.Context, from, to string) error {
+	_, err := call(ctx, r, func(db *sql.DB) (struct{}, error) {
+		tx, err := db.Begin()
+		if err != nil {
+			return struct{}{}, err
+		}
+		defer tx.Rollback()
+		if _, err := tx.Exec(`DELETE FROM folders WHERE rel_dir = ?1 OR substr(rel_dir, 1, length(?1) + 1) = ?1 || '/'`, to); err != nil {
+			return struct{}{}, err
+		}
+		if _, err := tx.Exec(`UPDATE folders SET rel_dir = ?2 || substr(rel_dir, length(?1) + 1)
+WHERE rel_dir = ?1 OR substr(rel_dir, 1, length(?1) + 1) = ?1 || '/'`, from, to); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, tx.Commit()
+	})
+	if err != nil {
+		return fmt.Errorf("rename folders %q to %q: %w", from, to, err)
+	}
+	return nil
+}
+
+// DeleteFolders drops the cached folder rel_dir and every cached folder below it.
+func (r *Repo) DeleteFolders(ctx context.Context, relDir string) error {
+	return r.exec(ctx, "delete folders",
+		`DELETE FROM folders WHERE rel_dir = ?1 OR substr(rel_dir, 1, length(?1) + 1) = ?1 || '/'`, relDir)
+}
+
+// HasFilesUnder reports whether any tracked file lives below the directory relDir.
+func (r *Repo) HasFilesUnder(ctx context.Context, relDir string) (bool, error) {
+	has, err := call(ctx, r, func(db *sql.DB) (bool, error) {
+		var one int
+		err := db.QueryRow(`SELECT 1 FROM files WHERE substr(rel_path, 1, length(?1) + 1) = ?1 || '/' LIMIT 1`, relDir).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return err == nil, err
+	})
+	if err != nil {
+		return false, fmt.Errorf("files under %q: %w", relDir, err)
+	}
+	return has, nil
+}
+
 // rowScanner is satisfied by *sql.Row and *sql.Rows.
 type rowScanner interface{ Scan(dest ...any) error }
 

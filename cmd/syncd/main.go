@@ -499,6 +499,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		Settle:  *settle,
 		Move:    uploader.Move,
 		Trash:   uploader.Trash,
+		MoveDir: uploader.MoveFolder,
 		OnStart: func(dirs int) {
 			fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", dirs, root)
 		},
@@ -613,7 +614,7 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "resuming %d queued jobs\n", n)
 	}
 	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
-	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), *workers, burrowsync.WithMove(uploader.Move), burrowsync.WithTrash(uploader.Trash))
+	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), *workers, burrowsync.WithMove(uploader.Move), burrowsync.WithTrash(uploader.Trash), burrowsync.WithMoveDir(uploader.MoveFolder))
 	for _, e := range sum.Unreadable {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
 	}

@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"log/slog"
 	"os"
+	"path"
 	"path/filepath"
+	"strings"
 	stdsync "sync"
 	"time"
 
@@ -75,6 +77,11 @@ func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc,
 // belongs. A *drive.Uploader's Move method is the real one.
 type MoveFunc func(ctx context.Context, driveFileID, newRel string) (drive.FileInfo, error)
 
+// MoveDirFunc renames and moves the Drive folder that mirrors oldDir so that it
+// mirrors newDir, children included. A *drive.Uploader's MoveFolder method is
+// the real one; it returns drive.ErrFileNotFound for a folder it does not know.
+type MoveDirFunc func(ctx context.Context, oldDir, newDir string) error
+
 // TrashFunc moves the Drive file driveFileID to the Drive trash. A
 // *drive.Uploader's Trash method is the real one.
 type TrashFunc func(ctx context.Context, driveFileID string) error
@@ -85,6 +92,11 @@ type SyncOption func(*runState)
 // WithMove lets the sync recognise a renamed or moved file (see tryMove) and
 // move it in Drive instead of uploading it again.
 func WithMove(m MoveFunc) SyncOption { return func(r *runState) { r.move = m } }
+
+// WithMoveDir lets the sync move a renamed folder in Drive as one folder (see
+// tryMoveDir) instead of leaving the old folder behind empty. It only works
+// together with WithMove.
+func WithMoveDir(m MoveDirFunc) SyncOption { return func(r *runState) { r.moveDir = m } }
 
 // WithTrash lets the sync trash the Drive file of a tracked file that is gone
 // locally. Without it, deleted files are left alone in Drive.
@@ -182,6 +194,9 @@ type runState struct {
 	report func(Event)
 	move   MoveFunc  // nil: renames are uploaded as new files
 	trash  TrashFunc // nil: deleted files are left in Drive
+
+	moveDir   MoveDirFunc   // nil: a renamed folder's files move one by one into a new folder
+	moveDirMu stdsync.Mutex // one folder move at a time, so workers moving siblings do it once
 }
 
 // add updates the summary and, when e is not nil, reports it, in that order
@@ -291,9 +306,42 @@ func trashGone(ctx context.Context, log *slog.Logger, root string, repo *store.R
 	if err := repo.Delete(context.WithoutCancel(ctx), rel); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return nil, fmt.Errorf("record %s: %w", rel, err)
 	}
+	trashEmptyDir(ctx, log, root, repo, run, rel)
 	log.Info("trashed, deleted locally", "drive_file_id", row.DriveFileID)
 	run.add(func(s *Summary) { s.Trashed++ }, &Event{RelPath: rel, Trashed: true})
 	return nil, nil
+}
+
+// trashEmptyDir trashes the Drive folder of the topmost directory above rel
+// that is gone locally and has no tracked file left below it (Drive trashes
+// the children with it), and drops its cache entries. A directory that still
+// has rows is a rename in progress or has files left to trash, so it stays.
+// Best effort: a failure leaves an empty folder in Drive and is only logged.
+func trashEmptyDir(ctx context.Context, log *slog.Logger, root string, repo *store.Repo, run *runState, rel string) {
+	var top, id string
+	for d := path.Dir(rel); d != "."; d = path.Dir(d) {
+		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(d))); !errors.Is(err, fs.ErrNotExist) {
+			break
+		}
+		if has, err := repo.HasFilesUnder(ctx, d); err != nil || has {
+			break
+		}
+		if fid, err := repo.GetFolder(ctx, d); err == nil {
+			top, id = d, fid
+		}
+	}
+	if top == "" {
+		return
+	}
+	if err := run.trash(ctx, id); err != nil && !errors.Is(err, drive.ErrFileNotFound) {
+		log.Warn("folder trash failed", "dir", top, "drive_file_id", id, "err", err)
+		return
+	}
+	if err := repo.DeleteFolders(context.WithoutCancel(ctx), top); err != nil {
+		log.Warn("folder cache not cleared", "dir", top, "err", err)
+		return
+	}
+	log.Info("trashed folder, deleted locally", "dir", top, "drive_file_id", id)
 }
 
 // failPanicked records a job whose processing panicked as an ordinary failed
@@ -431,6 +479,7 @@ func tryMove(ctx context.Context, log *slog.Logger, root string, repo *store.Rep
 		return false, nil, nil // unreadable here (the upload will say so) or different content
 	}
 
+	tryMoveDir(ctx, log, root, repo, run, from.RelPath, e.RelPath)
 	info, err := run.move(ctx, from.DriveFileID, e.RelPath)
 	switch {
 	case err == nil:
@@ -464,6 +513,63 @@ func tryMove(ctx context.Context, log *slog.Logger, root string, repo *store.Rep
 	log.Info("moved", "from", from.RelPath, "drive_file_id", info.ID)
 	run.add(func(s *Summary) { s.Moved++ }, &Event{RelPath: e.RelPath, MovedFrom: from.RelPath})
 	return true, nil, nil
+}
+
+// tryMoveDir moves a renamed folder in Drive when the file move from -> to is
+// the first sign of one. The folder pair is found by dropping the trailing path
+// components the two paths share (old/sub/b.txt -> new/sub/b.txt leaves
+// old -> new). The shortest pair qualifies when the old directory is gone
+// locally and cached as a Drive folder, and the new one exists and is not
+// cached yet. Anything else (a lone file moved between folders that both
+// remain) is left to the per-file move, which is correct, just not tidy. It is
+// best effort: a failure is logged and the files move one by one into a new
+// folder. The workers' later file moves find the folder already in place.
+// ponytail: a folder renamed together with a parent segment rename is not paired; upgrade by walking Diff's moves.
+func tryMoveDir(ctx context.Context, log *slog.Logger, root string, repo *store.Repo, run *runState, from, to string) {
+	if run.moveDir == nil {
+		return
+	}
+	f, t := strings.Split(path.Dir(from), "/"), strings.Split(path.Dir(to), "/")
+	if path.Dir(from) == "." || path.Dir(to) == "." {
+		return
+	}
+	// Candidate pairs: the full directories, then each step of dropping a
+	// shared last component. Try the shortest first (old -> new before
+	// old/sub -> new/sub).
+	type pair struct{ oldDir, newDir string }
+	var cands []pair
+	for {
+		cands = append(cands, pair{strings.Join(f, "/"), strings.Join(t, "/")})
+		if len(f) == 1 || len(t) == 1 || f[len(f)-1] != t[len(t)-1] {
+			break
+		}
+		f, t = f[:len(f)-1], t[:len(t)-1]
+	}
+	run.moveDirMu.Lock()
+	defer run.moveDirMu.Unlock()
+	for i := len(cands) - 1; i >= 0; i-- {
+		oldDir, newDir := cands[i].oldDir, cands[i].newDir
+		if oldDir == newDir {
+			continue
+		}
+		if _, err := os.Lstat(filepath.Join(root, filepath.FromSlash(oldDir))); !errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if st, err := os.Lstat(filepath.Join(root, filepath.FromSlash(newDir))); err != nil || !st.IsDir() {
+			continue
+		}
+		_, oldErr := repo.GetFolder(ctx, oldDir)
+		_, newErr := repo.GetFolder(ctx, newDir)
+		if oldErr != nil || !errors.Is(newErr, store.ErrNotFound) {
+			continue
+		}
+		if err := run.moveDir(ctx, oldDir, newDir); err != nil {
+			log.Warn("folder move failed, moving files one by one", "from", oldDir, "to", newDir, "err", err)
+		} else {
+			log.Info("moved folder", "from", oldDir, "to", newDir)
+		}
+		return
+	}
 }
 
 // record writes the row and, when Drive reported a head revision, its

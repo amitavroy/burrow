@@ -484,5 +484,14 @@ A file deleted locally is moved to the Drive trash (`trashed: true`), never hard
 - **Drive call:** `Uploader.Trash` (`internal/drive/trash.go`): one `files.update` with `trashed: true`, under the retry layer. Safe to repeat.
 - **Live:** the Debouncer signals every rename/remove event on `Removed()`. `Run` rescans (`Reconcile`) 3 settle periods after the last one, so a rename's new path has been debounced and `Diff` pairs it as a move rather than a delete. Cost: one full walk per burst of deletes.
 - **Output:** `trashed <path>` on stdout, `N trashed` in the `syncd sync` summary.
-- **Not done:** deleted folders are handled file by file (folder rename/delete is ticket 27); an unmounted root would trash everything (recoverable from the trash).
+- **Folders:** see Folder rename and delete. An unmounted root would still trash everything (recoverable from the trash).
+
+## Folder rename and delete
+
+Folders are not jobs; they ride on the per-file jobs, so the file logic stays the single source of truth.
+
+- **Rename:** the first file job that confirms a move (`tryMove`) calls `tryMoveDir` before moving the file. It derives candidate folder pairs by dropping the shared trailing components of the two paths (`old/sub/b.txt -> new/sub/b.txt` gives `old/sub -> new/sub`, then `old -> new`) and takes the shortest pair where the old directory is gone locally and cached in `folders`, and the new one exists and is not cached. One lock makes it happen once. `Uploader.MoveFolder` (`internal/drive/move.go`) is one `files.update` on the cached folder ID (new name, `addParents`/`removeParents`) and `Repo.RenameFolders` rewrites the cache for it and everything below it (prefix match on `/`, so `older` is untouched). The later file moves then find the folder in place and only retag `rel_path`. Children keep their IDs and history. Best effort: if the folder move fails or no pair qualifies (one file moved between two folders that both stay), files move one by one into a new folder as before, just leaving the old folder empty.
+- **Delete:** after a file is trashed, `trashEmptyDir` walks up from its directory while the directory is gone locally and no tracked file is left below it; the topmost such directory with a cached Drive folder is trashed (Drive trashes what is inside) and `Repo.DeleteFolders` drops its cache entries. A directory that still has rows (files left to trash, or a rename in progress) is kept. Best effort: a failed folder trash only leaves an empty folder in Drive.
+- **Wiring:** `WithMoveDir` / `RunOptions.MoveDir`, both set to `Uploader.MoveFolder` by `syncd sync` and `syncd run`. Without them folders are ignored.
+- **Ceilings:** a folder renamed together with a different parent segment (`a/x -> b/y` where both names change) is not paired; deleted directories that held no files (only empty folders) are not trashed.
 
