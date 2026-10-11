@@ -328,6 +328,7 @@ syncd: stopped; unfinished uploads stay queued
 - **Lost sign-in** stops the run (the workers cannot make progress): in-flight jobs are requeued and `syncd run` exits 1 with the same hint as `sync`. Other errors from the database also stop it.
 - **Watcher problems** (a queue overflow, a folder that could not be watched) are logged and printed on stderr, and the run goes on. Missed events are recovered by the next start's reconcile.
 - **Ctrl+C** cancels the uploads in flight; they resume from the start next time (resumable sessions are not persisted). Exit code 0.
+- **Control:** a running `syncd run` can be queried, paused and resumed from another terminal (see Control API).
 - **Limits:** only one `syncd` may run jobs against a database at a time; this is enforced by a lock (see Hardening). Renames and moves are handled (see Renames and moves). Deletes are propagated to the Drive trash (see Delete to trash).
 
 ## Hardening
@@ -584,4 +585,26 @@ sync a tree -> new empty database ("delete the DB")
 - **Three cases:** (1) database deleted, local folder intact: all files `matched`, then the sync does nothing and Drive sees no upload or trash; (2) database and local folder both gone: everything is downloaded, then the sync does nothing; (3) a file edited while the database was gone: Drive's version takes the path, the edit survives in the conflicted copy, and the next sync uploads exactly that copy and nothing else.
 - **Why it holds:** restore writes the same row an upload would (Drive ID, size, mtime, inode, MD5s, base revision), so reconcile and the sync's size-and-mtime check see "unchanged".
 - **Not covered:** a real Drive and the OS keychain; run `syncd restore` and then `syncd sync` by hand against a test account for that.
+
+## Control API
+
+A running `syncd run` can be steered from outside, which is what `syncd ctl` and, later, the tray app (separate process, ADR-001) use.
+
+```
+$ syncd ctl status
+state: running
+queue: 3
+last sync: 2026-10-11T18:50:00Z (12s ago)
+root: /home/me/MySync
+version: dev
+$ syncd ctl pause     # state: paused  (queue keeps growing, nothing uploads)
+$ syncd ctl resume
+```
+
+- **Transport:** HTTP over a Unix domain socket, `syncd.sock` next to the state database (never in the sync root). A socket instead of a localhost port because a port is reachable by every local user and, through DNS rebinding or a stray form post, by web pages; the socket is `0600`, so only the owner can use it. Go supports Unix sockets on Windows 10+ too, so the code has no OS branch.
+- **Routes** (`sync.ServeControl`, `internal/sync/control.go`): `GET /status`, `POST /pause`, `POST /resume`. Every reply is the JSON `Status` (`state`, `queue` = jobs pending or running, `last_sync` in RFC 3339 UTC or absent, `root`, `version`). Other methods and paths are refused.
+- **Pause** (`Control`): workers take no new job while paused; uploads already running finish. The watcher, the reconcile and the retry timer keep queueing, so nothing is lost, and `queue` shows the backlog. Resuming takes effect within one poll period (1 s). Pause is not remembered: a restart runs normally. A one-shot `syncd sync` has no control socket.
+- **Last sync** is when a job last finished without an error (an upload, update, move, trash or a no-op job), kept in memory only; it reads `never` after a start until the first job finishes.
+- **Lifecycle:** `syncd run` opens the socket after taking the database lock and removes it on exit. A socket left by a crash is replaced at the next start (the lock guarantees no live owner); `syncd ctl` on a stale file or none says `syncd: not running (start it with `syncd run`)` and exits 1.
+- **Not done:** no authentication beyond file permissions, no streaming of events (the UI polls `/status`), and no route for changing the root or the debug level (ticket 36).
 

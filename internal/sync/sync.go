@@ -196,6 +196,7 @@ type runState struct {
 	trash  TrashFunc // nil: deleted files are left in Drive
 
 	moveDir   MoveDirFunc   // nil: a renamed folder's files move one by one into a new folder
+	ctl       *Control      // nil: not steerable (one-shot sync)
 	moveDirMu stdsync.Mutex // one folder move at a time, so workers moving siblings do it once
 }
 
@@ -222,6 +223,12 @@ func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFun
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+		if run.ctl.Paused() && idle != nil { // take no new job; in-flight ones already finished
+			if err := idle(ctx); err != nil {
+				return err
+			}
+			continue
+		}
 		job, err := repo.ClaimJob(ctx)
 		if errors.Is(err, store.ErrNoJob) {
 			if idle == nil {
@@ -238,13 +245,16 @@ func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFun
 		e, ok := lookup(job.RelPath)
 		var out error // an error that must stop the worker
 		panicked := safely("worker", func() {
+			var fileErr, fatal error
 			if !ok { // the file is gone or ignored now: trash it in Drive if it was deleted
-				fileErr, fatal := trashGone(ctx, slog.With("path", job.RelPath, "job", job.ID), root, repo, run, job.RelPath)
-				out = finishJob(bg, repo, job, fileErr, fatal)
-				return
+				fileErr, fatal = trashGone(ctx, slog.With("path", job.RelPath, "job", job.ID), root, repo, run, job.RelPath)
+			} else {
+				fileErr, fatal = process(ctx, slog.With("path", e.RelPath, "job", job.ID), root, repo, upload, run, e)
 			}
-			fileErr, fatal := process(ctx, slog.With("path", e.RelPath, "job", job.ID), root, repo, upload, run, e)
 			out = finishJob(bg, repo, job, fileErr, fatal)
+			if out == nil && fileErr == nil && fatal == nil {
+				run.ctl.touch()
+			}
 		}, "path", job.RelPath, "job", job.ID)
 		if panicked {
 			out = failPanicked(bg, repo, run, job)

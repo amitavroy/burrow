@@ -500,12 +500,24 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	if err := loadSharedConfig(ctx, uploader, stderr); err != nil {
 		return reportDriveErr(stderr, "run", err)
 	}
+	ctl := &burrowsync.Control{}
+	sock := ctlSocket()
+	info := func(ctx context.Context) (burrowsync.Status, error) {
+		n, err := repo.CountJobs(ctx)
+		return burrowsync.Status{Queue: n, Root: root, Version: Version}, err
+	}
+	if err := burrowsync.ServeControl(ctx, sock, ctl, info); err != nil {
+		fmt.Fprintf(stderr, "syncd: run failed: %v\n", err)
+		return 1
+	}
+	defer os.Remove(sock)
 	err = burrowsync.Run(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), burrowsync.RunOptions{
 		Workers: *workers,
 		Settle:  *settle,
 		Move:    uploader.Move,
 		Trash:   uploader.Trash,
 		MoveDir: uploader.MoveFolder,
+		Control: ctl,
 		OnStart: func(dirs int) {
 			fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", dirs, root)
 		},
@@ -1025,6 +1037,51 @@ func restoreCmd(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// ctlSocket is where a running `syncd run` listens for control requests: next
+// to the state database, never in the sync root.
+func ctlSocket() string { return filepath.Join(filepath.Dir(dbPath()), "syncd.sock") }
+
+// formatStatus renders a daemon status as the lines `syncd ctl` prints.
+func formatStatus(st burrowsync.Status, now time.Time) string {
+	last := "never"
+	if t, err := time.Parse(time.RFC3339, st.LastSync); err == nil {
+		last = fmt.Sprintf("%s (%s ago)", st.LastSync, now.Sub(t).Round(time.Second))
+	}
+	return fmt.Sprintf("state: %s\nqueue: %d\nlast sync: %s\nroot: %s\nversion: %s\n", st.State, st.Queue, last, st.Root, st.Version)
+}
+
+// ctlCmd talks to a running `syncd run` through its control socket: it shows
+// the queue length and last sync, or pauses and resumes uploads.
+func ctlCmd(args []string, stdout, stderr io.Writer) int {
+	const usage = "usage: syncd ctl status | syncd ctl pause | syncd ctl resume"
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	method, path := "POST", "/"+args[0]
+	switch args[0] {
+	case "status":
+		method = "GET"
+	case "pause", "resume":
+	default:
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	st, err := burrowsync.ControlRequest(ctx, ctlSocket(), method, path)
+	switch {
+	case errors.Is(err, burrowsync.ErrNoDaemon):
+		fmt.Fprintln(stderr, "syncd: not running (start it with `syncd run`)")
+		return 1
+	case err != nil:
+		fmt.Fprintf(stderr, "syncd: ctl %s failed: %v\n", args[0], err)
+		return 1
+	}
+	fmt.Fprint(stdout, formatStatus(st, time.Now()))
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -1066,6 +1123,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return remoteCmd(args[1:], stdout, stderr)
 	case "restore":
 		return restoreCmd(args[1:], stdout, stderr)
+	case "ctl":
+		return ctlCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2

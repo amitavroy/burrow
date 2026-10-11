@@ -19,6 +19,7 @@ type RunOptions struct {
 	RetryEvery time.Duration // failed jobs go back to pending this often; default 5m
 	Move       MoveFunc      // moves a renamed file in Drive instead of uploading it; nil: no move detection
 	MoveDir    MoveDirFunc   // moves a renamed folder in Drive; nil: files move one by one
+	Control    *Control      // lets the control API pause, resume and read the last sync; nil: not steerable
 	Trash      TrashFunc     // trashes the Drive file of a deleted file; nil: deletes are not propagated
 	PollEvery  time.Duration // an idle worker looks for work at least this often; default 1s
 
@@ -107,7 +108,7 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 			}
 		}
 	}
-	state := &runState{report: report, move: opts.Move, moveDir: opts.MoveDir, trash: opts.Trash}
+	state := &runState{report: report, move: opts.Move, moveDir: opts.MoveDir, trash: opts.Trash, ctl: opts.Control}
 
 	// Ready paths become jobs.
 	wg.Add(1)

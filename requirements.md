@@ -311,7 +311,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 30 | M6 Restore | Safe download | Download to a temp file, then atomic rename into place | Downloaded file matches the Drive MD5 | 29 | => Done
 | 31 | M6 Restore | Restore command | `syncd restore --root <path>`: match, download missing, keep both on mismatch | A fresh folder fills from Drive with DB rows created | 28, 30 | => Done
 | 32 | M6 Restore | Rebuild-from-Drive test | End-to-end test: delete the DB, restore, sync again | **Checkpoint:** nothing is lost or re-uploaded | 31 | => Done
-| 33 | M7 Daemon and UI | Control API | Local socket or localhost HTTP: status, pause, resume | `syncd ctl status` prints queue length and last sync | 21 |
+| 33 | M7 Daemon and UI | Control API | Local socket or localhost HTTP: status, pause, resume | `syncd ctl status` prints queue length and last sync | 21 | => Done
 | 34 | M7 Daemon and UI | OS service install | systemd user unit, launchd agent, Windows startup entry | Daemon starts on login and survives a reboot | 21 |
 | 35 | M7 Daemon and UI | Tray app: status | `cmd/syncui` with `fyne.io/systray`: status, pause and resume | Tray icon shows the state; pause stops uploads | 33 |
 | 36 | M7 Daemon and UI | Tray app: errors and settings | Error log from `sync_errors`, open logs folder, debug toggle, change root | **Checkpoint:** v1 usable day to day without a terminal | 18, 35 |

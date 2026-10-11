@@ -923,3 +923,55 @@ func TestReportRestore(t *testing.T) {
 		t.Errorf("stdout = %q, stderr = %q", out.String(), errb.String())
 	}
 }
+
+func TestCtlCommand(t *testing.T) {
+	dir, err := os.MkdirTemp("", "bs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	oldDB := dbPath
+	dbPath = func() string { return filepath.Join(dir, "burrow.db") }
+	t.Cleanup(func() { dbPath = oldDB })
+
+	for _, args := range [][]string{{"ctl"}, {"ctl", "stop"}, {"ctl", "status", "x"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage: syncd ctl") {
+			t.Errorf("%v: code = %d, stderr = %q", args, code, stderr.String())
+		}
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"ctl", "status"}, &stdout, &stderr); code != 1 || !strings.Contains(stderr.String(), "not running") {
+		t.Errorf("no daemon: code = %d, stderr = %q", code, stderr.String())
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	ctl := &burrowsync.Control{}
+	info := func(context.Context) (burrowsync.Status, error) {
+		return burrowsync.Status{Queue: 4, Root: "/data/MySync", Version: "9.9"}, nil
+	}
+	if err := burrowsync.ServeControl(ctx, ctlSocket(), ctl, info); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct{ cmd, want string }{
+		{"status", "state: running\nqueue: 4\nlast sync: never\nroot: /data/MySync\nversion: 9.9\n"},
+		{"pause", "state: paused\nqueue: 4\n"},
+		{"resume", "state: running\nqueue: 4\n"},
+	} {
+		stdout.Reset()
+		stderr.Reset()
+		if code := run([]string{"ctl", tt.cmd}, &stdout, &stderr); code != 0 || !strings.HasPrefix(stdout.String(), tt.want) {
+			t.Errorf("ctl %s: code = %d, stdout = %q, stderr = %q", tt.cmd, code, stdout.String(), stderr.String())
+		}
+	}
+}
+
+func TestFormatStatusLastSync(t *testing.T) {
+	now := time.Date(2026, 10, 11, 12, 0, 30, 0, time.UTC)
+	got := formatStatus(burrowsync.Status{State: "running", LastSync: "2026-10-11T12:00:00Z"}, now)
+	if !strings.Contains(got, "last sync: 2026-10-11T12:00:00Z (30s ago)") {
+		t.Errorf("status = %q", got)
+	}
+}
