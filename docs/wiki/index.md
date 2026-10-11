@@ -261,7 +261,7 @@ syncd sync [--root DIR] [--workers N]
 - **One job per path.** Queueing a path again does not duplicate it: pending and failed jobs go to pending, a running one is left alone.
 - **Claim** is a single `UPDATE ... RETURNING` run by the repo's owner goroutine, so two workers never get the same job. Oldest (lowest id) first.
 - **Resume:** kill the process (even `kill -9`) mid-sync and run `syncd sync` again. It prints `resuming N queued jobs`, goes through what was left, and uploads nothing twice, because each file's `files` row is written before its job is deleted and the skip check (size and mtime, then MD5) makes a repeated job cheap.
-- **Cancel or lost sign-in:** the job in flight goes back to pending, and every worker stops. Other per-file errors mark the job `failed` (with `last_error`, never a request body) and the run goes on; the next run queues that file again. Surfacing failed jobs as readable lines is ticket 18.
+- **Cancel or lost sign-in:** the job in flight goes back to pending, and every worker stops. Other per-file errors mark the job `failed` (with `last_error`, never a request body) and the run goes on; the next run queues that file again. Each failure also gets a readable row in `sync_errors` (see Errors).
 - **A job whose file is no longer in the scan** (deleted or newly ignored) is dropped, not failed. Deleting in Drive is ticket 26.
 - **Workers:** `--workers N`, 1 to 16, default 3. `drive.Uploader` is safe to share: the Drive service is built once, and a folder is looked up or created by one worker at a time, so files going into a new folder create it once. The summary and `uploaded`/`updated`/`failed` lines are never interleaved. With more than one worker the order of the lines is not `rel_path` order.
 - **Job ID** in log lines is the row id of the job, so it stays the same across a resumed run.
@@ -324,7 +324,7 @@ Every file's Drive work (connect, tag lookup, folder creation, create or update)
 
 ## Logging
 
-Rule: diagnostics go through `log/slog`, installed once in `main`; user-facing results stay on stdout and stderr, and user-facing errors will come from the `sync_errors` table (ticket 18), never from parsing logs.
+Rule: diagnostics go through `log/slog`, installed once in `main`; user-facing results stay on stdout and stderr, and user-facing errors come from the `sync_errors` table (see Errors), never from parsing logs.
 
 ```
 main -> setupLogger(os.Getenv("SYNC_LOG"), stderr, store.LogPath())
