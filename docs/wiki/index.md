@@ -395,7 +395,7 @@ A rename **plus an edit** in one step fails the hash check and is uploaded as ne
 
 **Output.** `moved old -> new` on stdout (next to `uploaded` and `updated`), `N moved` in the `syncd sync` summary. `syncd scan --dry-run --diff` and the `reconciled:` line of `run` preview likely moves, found without hashing (a new file and a missing row with the same inode and size, one each); the job confirms them by hash. `Plan.Moved` pairs leave the new and missing lists.
 
-**Folders.** Renaming a folder shows up as every file below it appearing at a new path, so each file is moved by its own job: the end state is right, at one Drive call per file, and the emptied old folder stays in Drive. Moving a folder as one operation is ticket 27.
+**Folders.** Renaming a folder shows up as every file below it appearing at a new path, so each file is moved by its own job. The first of those jobs also moves the Drive folder itself, once (see Folder rename and delete), so the later file moves only retag rel_path and no emptied old folder is left behind.
 
 **Limits.** Matching is by inode, which is unique per filesystem and not stored with a device number; the hash makes a false match require an identical file. No match across filesystems or volumes. The code has no OS branch (Windows file IDs are used as inodes).
 
