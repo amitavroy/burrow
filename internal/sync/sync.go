@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	stdsync "sync"
 	"time"
 
 	"github.com/amitavroy/burrow/internal/drive"
@@ -39,104 +40,205 @@ type Summary struct {
 	Unreadable []error
 }
 
-// Sync scans root and uploads every file that has no row in repo yet, one at a
-// time in rel_path order, reporting each outcome through report. A file that
-// already has a row with a Drive ID is skipped when its size and mtime match
-// the row, or when its streamed MD5 equals Drive's (the row is then refreshed);
-// otherwise its content is replaced in place on Drive. After each successful
-// upload or update its row is written straight away (Drive ID, Drive's MD5, and the size and mtime seen by the
-// scan, which are never newer than what was uploaded), so an interrupted run
-// resumes where it stopped. A file that fails to upload is reported and
-// counted, and the run goes on. Sync stops at once, returning the error, when
-// the sign-in is gone (drive.ErrNotSignedIn or drive.ErrSessionExpired), when
-// ctx is cancelled, when the root cannot be scanned, or when repo fails. The
-// Summary is valid in every case.
+// Sync scans root, queues a job for every file in the jobs table, and drains
+// the queue one job at a time. Jobs left over from an interrupted run are
+// picked up first (a job whose file is no longer in the scan is dropped). A
+// file that already has a row with a Drive ID is skipped when its size and
+// mtime match the row, or when its streamed MD5 equals Drive's (the row is
+// then refreshed); otherwise its content is replaced in place on Drive. After
+// each successful upload or update its row is written straight away (Drive ID,
+// Drive's MD5, and the size and mtime seen by the scan, which are never newer
+// than what was uploaded), then the job is deleted, so a killed run resumes
+// where it stopped. A file that fails to upload is reported and counted, its
+// job is marked failed, and the run goes on; the next run queues it again.
+// Sync stops at once, returning the error, when the sign-in is gone
+// (drive.ErrNotSignedIn or drive.ErrSessionExpired), when ctx is cancelled,
+// when the root cannot be scanned, or when repo fails; the job in flight goes
+// back to pending. The Summary is valid in every case.
 func Sync(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, report func(Event)) (Summary, error) {
+	return SyncWorkers(ctx, root, repo, upload, report, 1)
+}
+
+// SyncWorkers is Sync with workers jobs in flight at once (at least 1). The
+// upload function must be safe for concurrent use when workers > 1; report is
+// never called concurrently. The first fatal error stops every worker, each
+// putting its job back in the queue, and is the error returned.
+func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, report func(Event), workers int) (Summary, error) {
+	// No other process uses the database, so a job still marked running is
+	// one a dead process left behind.
+	if _, err := repo.ResetRunningJobs(ctx); err != nil {
+		return Summary{}, err
+	}
 	res, err := Scan(root)
 	if err != nil {
 		return Summary{}, err
 	}
-	sum := Summary{Ignored: res.Ignored, Unreadable: res.Errors}
+	run := &runState{sum: Summary{Ignored: res.Ignored, Unreadable: res.Errors}, report: report}
+	entries := make(map[string]Entry, len(res.Entries))
+	paths := make([]string, len(res.Entries))
+	for i, e := range res.Entries {
+		entries[e.RelPath], paths[i] = e, e.RelPath
+	}
+	if err := repo.EnqueueJobs(ctx, paths); err != nil {
+		return run.sum, err
+	}
 
-	for job, e := range res.Entries {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var (
+		once  stdsync.Once
+		fatal error
+		wg    stdsync.WaitGroup
+	)
+	stop := func(err error) { once.Do(func() { fatal = err; cancel() }) }
+	for range max(workers, 1) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := worker(ctx, root, repo, upload, run, entries); err != nil {
+				stop(err)
+			}
+		}()
+	}
+	wg.Wait()
+	// All workers are done, so nothing else touches run.
+	return run.sum, fatal
+}
+
+// runState is what the workers of one SyncWorkers share: the summary and the
+// report callback, serialized by one lock.
+type runState struct {
+	mu     stdsync.Mutex
+	sum    Summary
+	report func(Event)
+}
+
+// add updates the summary and, when e is not nil, reports it, in that order
+// and under one lock.
+func (r *runState) add(count func(*Summary), e *Event) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count(&r.sum)
+	if e != nil {
+		r.report(*e)
+	}
+}
+
+// worker claims and processes jobs until the queue is empty. It returns the
+// error that must stop the run, or nil.
+func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, run *runState, entries map[string]Entry) error {
+	// Recording the outcome of a job is local and quick, so it ignores
+	// cancellation: an interrupt must not leave a finished job queued.
+	bg := context.WithoutCancel(ctx)
+	for {
 		if err := ctx.Err(); err != nil {
-			return sum, err
+			return err
 		}
-		// job numbers the file within this run, until the queue (ticket 17)
-		// provides real job IDs. Only paths and IDs are logged, never content.
-		log := slog.With("path", e.RelPath, "job", job+1)
-		row, err := repo.Get(ctx, e.RelPath)
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return sum, err
+		job, err := repo.ClaimJob(ctx)
+		if errors.Is(err, store.ErrNoJob) {
+			return nil
 		}
-		path := filepath.Join(root, filepath.FromSlash(e.RelPath))
-		// known is a row for a file already on Drive: changed content is
-		// replaced in place, not uploaded as a new file.
-		known := err == nil && row.DriveFileID != ""
-		if known {
-			// Same size and mtime: unchanged, no read. Otherwise hash the file:
-			// content Drive already has only needs the row refreshed.
-			if row.Size == e.Size && row.MTime == e.MTime {
-				log.Debug("unchanged, size and mtime match", "drive_file_id", row.DriveFileID)
-				sum.Synced++
-				continue
-			}
-			md5sum, herr := fileMD5(path)
-			if herr != nil {
-				log.Warn("hash failed", "drive_file_id", row.DriveFileID, "err", herr)
-				sum.Failed++
-				report(Event{RelPath: e.RelPath, Err: herr})
-				continue
-			}
-			row.LocalMD5 = md5sum
-			if md5sum == row.SyncedMD5 {
-				row.Size, row.MTime = e.Size, e.MTime
-				if err := repo.Upsert(context.WithoutCancel(ctx), row); err != nil {
-					log.Error("record failed", "drive_file_id", row.DriveFileID, "err", err)
-					return sum, fmt.Errorf("record %s: %w", e.RelPath, err)
-				}
-				log.Info("refreshed row, content unchanged", "drive_file_id", row.DriveFileID)
-				sum.Synced++
-				continue
-			}
+		if err != nil {
+			return err
 		}
-		info, err := upload(ctx, path, e.RelPath)
+		e, ok := entries[job.RelPath]
+		if !ok { // left over from an earlier run; the file is gone or ignored now
+			slog.Debug("dropped job, file not in scan", "path", job.RelPath, "job", job.ID)
+			if err := repo.CompleteJob(bg, job.ID); err != nil {
+				return err
+			}
+			continue
+		}
+		fileErr, fatal := process(ctx, slog.With("path", e.RelPath, "job", job.ID), root, repo, upload, run, e)
 		switch {
-		case err == nil:
-			// An interrupt must not lose the record of a file that is already
-			// on Drive: the write is local and quick, so it ignores cancellation.
-			rec := store.File{RelPath: e.RelPath}
-			if known {
-				rec = row
+		case fatal != nil:
+			if err := repo.RequeueJob(bg, job.ID); err != nil {
+				slog.Error("requeue failed", "job", job.ID, "err", err)
 			}
-			rec.DriveFileID, rec.Size, rec.MTime, rec.SyncedMD5 = info.ID, e.Size, e.MTime, info.MD5
-			// Base is the state after the last successful sync with Drive;
-			// only an upload or update moves it.
-			rec.BaseMD5, rec.BaseRevisionID = info.MD5, info.RevisionID
-			if err := record(context.WithoutCancel(ctx), repo, rec, info, e.Size); err != nil {
-				log.Error("record failed", "drive_file_id", info.ID, "err", err)
-				return sum, fmt.Errorf("record %s: %w", e.RelPath, err)
-			}
-			if known {
-				log.Info("updated", "drive_file_id", info.ID, "revision_id", info.RevisionID, "size", e.Size)
-				sum.Updated++
-			} else {
-				log.Info("uploaded", "drive_file_id", info.ID, "revision_id", info.RevisionID, "size", e.Size)
-				sum.Uploaded++
-			}
-			report(Event{RelPath: e.RelPath, Updated: known})
-		case errors.Is(err, drive.ErrNotSignedIn), errors.Is(err, drive.ErrSessionExpired):
-			log.Error("sync aborted, sign-in lost", "err", err)
-			return sum, err
-		case ctx.Err() != nil:
-			return sum, ctx.Err()
+			return fatal
+		case fileErr != nil:
+			err = repo.FailJob(bg, job.ID, fileErr.Error())
 		default:
-			log.Warn("upload failed", "drive_file_id", row.DriveFileID, "err", err)
-			sum.Failed++
-			report(Event{RelPath: e.RelPath, Err: err})
+			err = repo.CompleteJob(bg, job.ID)
+		}
+		if err != nil {
+			return err
 		}
 	}
-	return sum, nil
+}
+
+// process does the work of one job. A per-file problem comes back as fileErr
+// (already reported and counted); fatal is an error that must stop the run.
+func process(ctx context.Context, log *slog.Logger, root string, repo *store.Repo, upload UploadFunc, run *runState, e Entry) (fileErr, fatal error) {
+	row, err := repo.Get(ctx, e.RelPath)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return nil, err
+	}
+	path := filepath.Join(root, filepath.FromSlash(e.RelPath))
+	// known is a row for a file already on Drive: changed content is
+	// replaced in place, not uploaded as a new file.
+	known := err == nil && row.DriveFileID != ""
+	if known {
+		// Same size and mtime: unchanged, no read. Otherwise hash the file:
+		// content Drive already has only needs the row refreshed.
+		if row.Size == e.Size && row.MTime == e.MTime {
+			log.Debug("unchanged, size and mtime match", "drive_file_id", row.DriveFileID)
+			run.add(func(s *Summary) { s.Synced++ }, nil)
+			return nil, nil
+		}
+		md5sum, herr := fileMD5(path)
+		if herr != nil {
+			log.Warn("hash failed", "drive_file_id", row.DriveFileID, "err", herr)
+			run.add(func(s *Summary) { s.Failed++ }, &Event{RelPath: e.RelPath, Err: herr})
+			return herr, nil
+		}
+		row.LocalMD5 = md5sum
+		if md5sum == row.SyncedMD5 {
+			row.Size, row.MTime = e.Size, e.MTime
+			if err := repo.Upsert(context.WithoutCancel(ctx), row); err != nil {
+				log.Error("record failed", "drive_file_id", row.DriveFileID, "err", err)
+				return nil, fmt.Errorf("record %s: %w", e.RelPath, err)
+			}
+			log.Info("refreshed row, content unchanged", "drive_file_id", row.DriveFileID)
+			run.add(func(s *Summary) { s.Synced++ }, nil)
+			return nil, nil
+		}
+	}
+	info, err := upload(ctx, path, e.RelPath)
+	switch {
+	case err == nil:
+		// An interrupt must not lose the record of a file that is already
+		// on Drive: the write is local and quick, so it ignores cancellation.
+		rec := store.File{RelPath: e.RelPath}
+		if known {
+			rec = row
+		}
+		rec.DriveFileID, rec.Size, rec.MTime, rec.SyncedMD5 = info.ID, e.Size, e.MTime, info.MD5
+		// Base is the state after the last successful sync with Drive;
+		// only an upload or update moves it.
+		rec.BaseMD5, rec.BaseRevisionID = info.MD5, info.RevisionID
+		if err := record(context.WithoutCancel(ctx), repo, rec, info, e.Size); err != nil {
+			log.Error("record failed", "drive_file_id", info.ID, "err", err)
+			return nil, fmt.Errorf("record %s: %w", e.RelPath, err)
+		}
+		if known {
+			log.Info("updated", "drive_file_id", info.ID, "revision_id", info.RevisionID, "size", e.Size)
+			run.add(func(s *Summary) { s.Updated++ }, &Event{RelPath: e.RelPath, Updated: true})
+		} else {
+			log.Info("uploaded", "drive_file_id", info.ID, "revision_id", info.RevisionID, "size", e.Size)
+			run.add(func(s *Summary) { s.Uploaded++ }, &Event{RelPath: e.RelPath})
+		}
+		return nil, nil
+	case errors.Is(err, drive.ErrNotSignedIn), errors.Is(err, drive.ErrSessionExpired):
+		log.Error("sync aborted, sign-in lost", "err", err)
+		return nil, err
+	case ctx.Err() != nil:
+		return nil, ctx.Err()
+	default:
+		log.Warn("upload failed", "drive_file_id", row.DriveFileID, "err", err)
+		run.add(func(s *Summary) { s.Failed++ }, &Event{RelPath: e.RelPath, Err: err})
+		return err, nil
+	}
 }
 
 // record writes the row and, when Drive reported a head revision, its

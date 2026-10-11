@@ -1,7 +1,9 @@
 // Package sync holds the sync engine: watcher, debounce, persistent queue and uploader.
 // Scan walks the sync root and returns the files a sync would upload, after
 // the default ignore rules and the root's .syncignore (see Matcher). Sync
-// uploads new files through an UploadFunc and records each one's Drive ID in
+// queues a job per file in the state database and drains the queue with one
+// or more workers (SyncWorkers), so a killed run resumes. It uploads new files
+// through an UploadFunc and records each one's Drive ID in
 // the state database. A recorded file is skipped when its size and mtime or
 // its streamed MD5 match the row, and is replaced in place when its content
 // changed. Sync logs through slog.Default with path, job and drive_file_id

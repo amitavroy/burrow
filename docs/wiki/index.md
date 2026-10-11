@@ -158,7 +158,7 @@ Layout: `rel_path` `a/b/c.txt` lands in `MySync/a/b/` with the name `c.txt`. Dir
 - Tag values and folder names are escaped (`\` and `'`) in queries.
 - File lookup does not depend on the parent folder, so a file is found wherever it sits (this also keeps later renames and moves working).
 - Folder cache: `syncd put` opens the state database and keeps `rel_dir -> Drive folder ID` in its `folders` table (see State database). A cached ID is trusted only after `files.get` shows it exists and is not trashed; only the deepest folder is checked, because trashing a folder trashes its contents. A stale entry heals itself by looking the folder up again. The cache is best effort: if the database cannot be opened, `put` prints a warning and works without it; cache read and write errors never fail an upload. With no cache, or after deleting `burrow.db`, existing folders are found again, not duplicated.
-- Two concurrent uploads could create the same folder twice; duplicates are tolerated (oldest wins). `syncd sync` is sequential, so any single-flight guard belongs with bounded concurrency in ticket 17.
+- Two concurrent uploads could create the same folder twice; duplicates are tolerated (oldest wins). Workers of one `Uploader` share a per-folder lock, so a new folder is created once (see Job queue).
 - Files that fit in one 8 MB chunk go as one multipart request; larger ones use a resumable upload in 8 MB chunks. The file is streamed from disk, never read whole: the Drive client holds one chunk (8 MB) at a time, so memory use does not grow with file size. A test uploads a 128 MB sparse file to the fake Drive and asserts the live heap grows by less than three chunks (it measures about 8.5 MB, and the same for 1 GB). An exact multiple of the chunk size ends with an empty `bytes */total` request, which finalizes the upload.
 - "Resumable" holds within one run: the client retries a chunk on its session URI. The session is not saved, so a killed process starts the file again from byte 0 on the next run; no `files` row is written until an upload succeeds, so nothing is lost. Cancelling (Ctrl+C) stops the upload between chunks and returns the context error, which `syncd sync` treats as an abort, not a failed file.
 - Folders are found by name, parent and mimeType (`trashed = false`), and the oldest wins if Drive holds duplicates. They carry no `appProperties`, because the tree already implies the path. Names are escaped like tag values. Folder rename and delete come with ticket 27, and the MD5 skip with ticket 12 (retries: see Retries).
@@ -239,11 +239,34 @@ syncd sync [--root DIR]                 (root defaults to ~/MySync; usage error 
 - A file is uploaded as new when it has no row, or a row with no Drive ID. For a file with a row, change detection is two steps: same size and mtime means unchanged with no read; otherwise the file is stream-hashed (MD5, never loaded whole) and compared to `synced_md5`, which is what Drive holds. An equal hash only refreshes the row (`size`, `mtime`, `local_md5`), so a `touch` or a restore that resets mtimes uploads nothing. A different hash goes through `Uploader.Upload`, which finds the file by its `rel_path` tag and calls `files.update`, so the Drive file ID is kept. A row without `synced_md5` counts as changed and is re-uploaded once. Accepted limit: an edit that keeps both size and mtime is not noticed.
 - The row holds `drive_file_id`, `synced_md5` (Drive's `md5Checksum`), and the `size` and `mtime` seen by the scan before the upload. If the file changes while it uploads, the stored values are older than the file, which errs toward a re-upload on the next run. `local_md5` is a cache of the last hash taken; `base_md5` and `base_revision_id` stay empty until ticket 13.
 - The row is written right after each upload, ignoring cancellation, so Ctrl+C or a crash loses at most the file in flight and a rerun resumes. A file uploaded but not recorded is found again by its `rel_path` tag and updated in place, never duplicated. A failed upload writes no row, so the next run retries it.
-- Uploads are sequential. A run that hits a repeating problem (for example a dead network or an `invalid_client` error) reports each file as failed instead of aborting; only a lost sign-in aborts. Retries with backoff come with ticket 16, and the queue with bounded concurrency with ticket 17.
+- Uploads run through the job queue, `--workers` at a time (see Job queue). A run that hits a repeating problem (for example a dead network or an `invalid_client` error) reports each file as failed instead of aborting; only a lost sign-in aborts. Transient errors are retried (see Retries).
 - After each successful upload or update the row also records `base_md5` and `base_revision_id` (Drive's `md5Checksum` and `headRevisionId`) and adds a `file_revisions` entry, in one transaction. A Drive response without a head revision still records the row, with no revision entry. A skipped or refreshed file changes neither.
 - `syncd history <rel_path>` prints the recorded revisions newest first, one per line: time (UTC), revision ID, MD5, size, source. It reads the database only (no sign-in), and exits 1 with a message when nothing is recorded for the path. Drive prunes old revisions on its own schedule, so the local rows are the durable record.
 - The same state database also holds the folder-ID cache (see "Uploading a file"), so the folders of a tree are resolved once.
 - Code: `sync.Sync`, `UploadFunc`, `Event`, `Summary` (`internal/sync/sync.go`); `drive.Uploader` and `NewUploader` (`internal/drive/upload.go`); the `sync` command in `cmd/syncd/main.go`. `Sync` takes the upload as a function, so the engine is tested with a fake and no HTTP.
+
+## Job queue
+
+`syncd sync` does not upload straight from the scan. It queues a job per file in the `jobs` table of the state database and drains the queue with a small pool of workers (`internal/store/jobs.go`, `internal/sync/sync.go`).
+
+```
+syncd sync [--root DIR] [--workers N]
+  -> ResetRunningJobs      jobs a dead process left "running" go back to pending
+  -> Scan the root         (ignore rules as for scan)
+  -> EnqueueJobs           one job per rel_path, in one transaction; idempotent
+  -> N workers loop:       ClaimJob -> process -> CompleteJob | FailJob | RequeueJob
+```
+
+- **Table:** `jobs(id, rel_path UNIQUE, status, attempts, last_error, created_at, updated_at)`. Status is `pending`, `running` or `failed`. A finished job is deleted: `files` and `file_revisions` already record what happened.
+- **One job per path.** Queueing a path again does not duplicate it: pending and failed jobs go to pending, a running one is left alone.
+- **Claim** is a single `UPDATE ... RETURNING` run by the repo's owner goroutine, so two workers never get the same job. Oldest (lowest id) first.
+- **Resume:** kill the process (even `kill -9`) mid-sync and run `syncd sync` again. It prints `resuming N queued jobs`, goes through what was left, and uploads nothing twice, because each file's `files` row is written before its job is deleted and the skip check (size and mtime, then MD5) makes a repeated job cheap.
+- **Cancel or lost sign-in:** the job in flight goes back to pending, and every worker stops. Other per-file errors mark the job `failed` (with `last_error`, never a request body) and the run goes on; the next run queues that file again. Surfacing failed jobs as readable lines is ticket 18.
+- **A job whose file is no longer in the scan** (deleted or newly ignored) is dropped, not failed. Deleting in Drive is ticket 26.
+- **Workers:** `--workers N`, 1 to 16, default 3. `drive.Uploader` is safe to share: the Drive service is built once, and a folder is looked up or created by one worker at a time, so files going into a new folder create it once. The summary and `uploaded`/`updated`/`failed` lines are never interleaved. With more than one worker the order of the lines is not `rel_path` order.
+- **Job ID** in log lines is the row id of the job, so it stays the same across a resumed run.
+- Only one `syncd` may use the database at a time; the reset of `running` jobs relies on it.
+- Not here: the watcher feeding the queue (tickets 19 to 21), delete and rename jobs (25 to 27), run-wide rate limiting.
 
 ## Retries
 

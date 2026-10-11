@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 
 	"github.com/amitavroy/burrow/internal/store"
 	drv "google.golang.org/api/drive/v3"
@@ -55,8 +56,9 @@ func Upload(ctx context.Context, client Client, tokens KeyringStore, roots FileS
 
 // Uploader sends local files to Drive. The Drive service, its token source
 // and the MySync folder ID are built on the first upload and reused after
-// that, so a whole tree costs one token refresh and one root check. It is not
-// safe for concurrent use.
+// that, so a whole tree costs one token refresh and one root check. It is safe
+// for concurrent use: workers share the service, and a folder is looked up or
+// created by one worker at a time.
 type Uploader struct {
 	client  Client
 	tokens  KeyringStore
@@ -64,8 +66,11 @@ type Uploader struct {
 	folders *store.Repo
 	extra   []option.ClientOption
 
+	mu     sync.Mutex // guards svc and rootID
 	svc    *drv.Service
 	rootID string
+
+	dirMu sync.Map // rel_dir -> *sync.Mutex, one folder is made by one worker at a time
 }
 
 // NewUploader returns an Uploader. folders caches folder IDs (nil means no
@@ -77,6 +82,8 @@ func NewUploader(client Client, tokens KeyringStore, roots FileStore, folders *s
 
 // connect builds the Drive service and finds the MySync folder, once.
 func (u *Uploader) connect(ctx context.Context) error {
+	u.mu.Lock()
+	defer u.mu.Unlock()
 	if u.svc != nil {
 		return nil
 	}
@@ -137,7 +144,7 @@ func (u *Uploader) Upload(ctx context.Context, localPath, relPath string) (FileI
 				Media(f, media).Fields(uploadFields).Context(ctx).Do()
 		} else {
 			var dirID string
-			dirID, err = ensureDir(ctx, u.svc, u.folders, u.rootID, path.Dir(relPath))
+			dirID, err = u.ensureDir(ctx, path.Dir(relPath))
 			if err != nil {
 				return sessionError(err)
 			}
@@ -236,10 +243,18 @@ func validateRelPath(relPath string) error {
 // after Drive confirms it exists and is not trashed; otherwise the folder is
 // looked up (or created) again and the cache rewritten, so a stale entry heals
 // itself. The cache is disposable, so its errors are treated as a miss.
-func ensureDir(ctx context.Context, svc *drv.Service, folders *store.Repo, rootID, relDir string) (string, error) {
+//
+// Each relDir is locked while it is looked up or created (parents are locked
+// child first, always in that order), so workers uploading into a new folder
+// create it once.
+func (u *Uploader) ensureDir(ctx context.Context, relDir string) (string, error) {
+	svc, folders, rootID := u.svc, u.folders, u.rootID
 	if relDir == "." || relDir == "" {
 		return rootID, nil
 	}
+	m, _ := u.dirMu.LoadOrStore(relDir, new(sync.Mutex))
+	m.(*sync.Mutex).Lock()
+	defer m.(*sync.Mutex).Unlock()
 	if folders != nil {
 		if id, err := folders.GetFolder(ctx, relDir); err == nil {
 			ok, err := folderUsable(ctx, svc, id)
@@ -251,7 +266,7 @@ func ensureDir(ctx context.Context, svc *drv.Service, folders *store.Repo, rootI
 			}
 		}
 	}
-	parentID, err := ensureDir(ctx, svc, folders, rootID, path.Dir(relDir))
+	parentID, err := u.ensureDir(ctx, path.Dir(relDir))
 	if err != nil {
 		return "", err
 	}

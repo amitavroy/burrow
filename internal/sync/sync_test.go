@@ -10,7 +10,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
@@ -594,7 +596,7 @@ func TestSyncLogsPathJobAndDriveFileID(t *testing.T) {
 	out := logs.String()
 	for _, want := range []string{
 		`msg=uploaded path=a.txt job=1 drive_file_id=id-a.txt`,
-		`msg=updated path=a.txt job=1 drive_file_id=id-a.txt`,
+		`msg=updated path=a.txt job=3 drive_file_id=id-a.txt`, // job IDs are persistent, not per run
 		`msg="upload failed" path=b.txt job=2`,
 	} {
 		if !strings.Contains(out, want) {
@@ -616,5 +618,181 @@ func TestSyncFileThatFailsAfterRetriesIsAFailure(t *testing.T) {
 
 	if err != nil || sum.Uploaded != 2 || sum.Failed != 1 {
 		t.Fatalf("sum=%+v err=%v, want 2 uploaded, 1 failed, no abort", sum, err)
+	}
+}
+
+// Jobs a dead process left running are picked up again by the next run.
+func TestSyncResumesLeftoverJobs(t *testing.T) {
+	ctx := context.Background()
+	root := syncTree(t)
+	repo := openRepo(t)
+	if err := repo.EnqueueJobs(ctx, []string{"a.txt", "z.txt"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.ClaimJob(ctx); err != nil { // a.txt was running when the process died
+		t.Fatal(err)
+	}
+	if n, _ := repo.CountJobs(ctx); n != 2 {
+		t.Fatalf("leftover = %d, want 2", n)
+	}
+	u := &uploads{}
+
+	sum, err := Sync(ctx, root, repo, u.fn, func(Event) {})
+
+	if err != nil || sum.Uploaded != 3 || !reflect.DeepEqual(u.rels, []string{"a.txt", "z.txt", "a/b.txt"}) {
+		t.Fatalf("sum=%+v err=%v rels=%v, want the leftovers first, then the rest", sum, err, u.rels)
+	}
+	if n, _ := repo.CountJobs(ctx); n != 0 {
+		t.Errorf("%d jobs left after a full run", n)
+	}
+}
+
+// A cancel leaves the unfinished jobs queued; the next run finishes them and
+// does not upload the finished file again.
+func TestSyncCancelLeavesJobsQueued(t *testing.T) {
+	root := syncTree(t)
+	repo := openRepo(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	u := &uploads{after: func(string) { cancel() }}
+
+	if _, err := Sync(ctx, root, repo, u.fn, func(Event) {}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+	if n, _ := repo.CountJobs(context.Background()); n != 2 {
+		t.Fatalf("queued = %d, want the 2 files not yet uploaded", n)
+	}
+
+	second := &uploads{}
+	sum, err := Sync(context.Background(), root, repo, second.fn, func(Event) {})
+	if err != nil || sum.Uploaded != 2 || sum.Synced != 1 || len(second.rels) != 2 {
+		t.Fatalf("sum=%+v err=%v rels=%v", sum, err, second.rels)
+	}
+}
+
+// A lost sign-in puts the job in flight back in the queue.
+func TestSyncSignInLostRequeuesTheJob(t *testing.T) {
+	root := syncTree(t)
+	repo := openRepo(t)
+	u := &uploads{failOn: map[string]error{"a.txt": drive.ErrNotSignedIn}}
+
+	if _, err := Sync(context.Background(), root, repo, u.fn, func(Event) {}); !errors.Is(err, drive.ErrNotSignedIn) {
+		t.Fatalf("err = %v", err)
+	}
+	if n, _ := repo.CountJobs(context.Background()); n != 3 {
+		t.Errorf("queued = %d, want all 3 still queued", n)
+	}
+}
+
+// A job for a file that is gone (or ignored now) is dropped, not failed.
+func TestSyncDropsJobsForFilesNotInTheScan(t *testing.T) {
+	ctx := context.Background()
+	root := syncTree(t)
+	repo := openRepo(t)
+	_ = repo.EnqueueJobs(ctx, []string{"ghost.txt"})
+	u := &uploads{}
+
+	sum, err := Sync(ctx, root, repo, u.fn, func(Event) {})
+
+	if err != nil || sum.Failed != 0 || len(u.rels) != 3 {
+		t.Fatalf("sum=%+v err=%v rels=%v", sum, err, u.rels)
+	}
+	if n, _ := repo.CountJobs(ctx); n != 0 {
+		t.Errorf("%d jobs left", n)
+	}
+}
+
+func fileTree(t *testing.T, n int) string {
+	t.Helper()
+	root := t.TempDir()
+	for i := range n {
+		write(t, filepath.Join(root, fmt.Sprintf("f%02d.txt", i)), "x")
+	}
+	return root
+}
+
+func okUpload(_ context.Context, _, rel string) (drive.FileInfo, error) {
+	return drive.FileInfo{ID: "id-" + rel, MD5: "m", RevisionID: "r-" + rel}, nil
+}
+
+// With 3 workers, 3 uploads are in flight together: each blocks until all
+// three have arrived.
+func TestSyncWorkersRunInParallel(t *testing.T) {
+	root := fileTree(t, 6)
+	var arrived atomic.Int32
+	gate := make(chan struct{})
+	upload := func(ctx context.Context, p, rel string) (drive.FileInfo, error) {
+		if arrived.Add(1) == 3 {
+			close(gate)
+		}
+		select {
+		case <-gate:
+		case <-time.After(5 * time.Second):
+			return drive.FileInfo{}, errors.New("workers did not overlap")
+		}
+		return okUpload(ctx, p, rel)
+	}
+
+	sum, err := SyncWorkers(context.Background(), root, openRepo(t), upload, func(Event) {}, 3)
+
+	if err != nil || sum.Uploaded != 6 || sum.Failed != 0 {
+		t.Fatalf("sum=%+v err=%v", sum, err)
+	}
+}
+
+func TestSyncWorkersSummaryAddsUp(t *testing.T) {
+	root := fileTree(t, 40)
+	repo := openRepo(t)
+	boom := errors.New("boom")
+	upload := func(ctx context.Context, p, rel string) (drive.FileInfo, error) {
+		if rel == "f07.txt" || rel == "f31.txt" {
+			return drive.FileInfo{}, boom
+		}
+		return okUpload(ctx, p, rel)
+	}
+	var events int
+	sum, err := SyncWorkers(context.Background(), root, repo, upload, func(Event) { events++ }, 4)
+
+	if err != nil || sum.Uploaded != 38 || sum.Failed != 2 || events != 40 {
+		t.Fatalf("sum=%+v events=%d err=%v", sum, events, err)
+	}
+	if files, _ := repo.List(context.Background()); len(files) != 38 {
+		t.Errorf("%d rows, want 38", len(files))
+	}
+}
+
+// A lost sign-in in one worker stops the others, and every unfinished job is
+// still queued.
+func TestSyncWorkersFatalErrorStopsTheOthers(t *testing.T) {
+	root := fileTree(t, 3)
+	repo := openRepo(t)
+	var arrived atomic.Int32
+	all := make(chan struct{})
+	upload := func(ctx context.Context, p, rel string) (drive.FileInfo, error) {
+		if arrived.Add(1) == 3 {
+			close(all)
+		}
+		<-all
+		if rel == "f00.txt" {
+			return drive.FileInfo{}, drive.ErrSessionExpired
+		}
+		<-ctx.Done() // the others hang until the run is stopped
+		return drive.FileInfo{}, ctx.Err()
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := SyncWorkers(context.Background(), root, repo, upload, func(Event) {}, 3)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, drive.ErrSessionExpired) {
+			t.Fatalf("err = %v, want ErrSessionExpired", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("workers did not stop")
+	}
+	if n, _ := repo.CountJobs(context.Background()); n != 3 {
+		t.Errorf("queued = %d, want 3", n)
 	}
 }

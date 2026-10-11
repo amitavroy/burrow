@@ -4,5 +4,7 @@
 // for the files table: OpenRepo starts the goroutine, and typed methods
 // (Upsert, Get, GetByDriveID, List, Delete) talk to it over a channel.
 // RecordUpload and Revisions keep the file_revisions history written on each
-// upload.
+// upload. EnqueueJobs, ClaimJob, CompleteJob, FailJob, RequeueJob and
+// ResetRunningJobs are the persistent job queue (the jobs table) that a sync
+// drains, so interrupted work resumes.
 package store

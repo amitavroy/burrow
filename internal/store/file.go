@@ -7,6 +7,8 @@ var (
 	ErrNotFound = errors.New("store: not found")
 	// ErrClosed is returned by any Repo method called after Close.
 	ErrClosed = errors.New("store: repo closed")
+	// ErrNoJob is returned by ClaimJob when no job is pending.
+	ErrNoJob = errors.New("store: no pending job")
 )
 
 // File is one tracked file. Empty strings and a zero Inode mean "unknown" and

@@ -332,18 +332,19 @@ func scan(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// syncCmd uploads every file under the sync root to Drive, one at a time.
+// syncCmd uploads every file under the sync root to Drive, several at a time.
 // Files already recorded in the state database are skipped. Per-file failures
 // are reported and make the exit code 1; a lost sign-in or Ctrl+C stops the run.
 func syncCmd(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("sync", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	rootDir := fs.String("root", "", "sync root to upload (default ~/MySync)")
+	workers := fs.Int("workers", 3, "files to upload at once (1 to 16)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if fs.NArg() != 0 {
-		fmt.Fprintln(stderr, "usage: syncd sync [--root DIR]")
+	if fs.NArg() != 0 || *workers < 1 || *workers > 16 {
+		fmt.Fprintln(stderr, "usage: syncd sync [--root DIR] [--workers N]  (N is 1 to 16)")
 		return 2
 	}
 	root := *rootDir
@@ -371,8 +372,11 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	defer repo.Close()
 
+	if n, err := repo.CountJobs(ctx); err == nil && n > 0 {
+		fmt.Fprintf(stderr, "resuming %d queued jobs\n", n)
+	}
 	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
-	sum, err := burrowsync.Sync(ctx, root, repo, uploader.Upload, func(e burrowsync.Event) {
+	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, func(e burrowsync.Event) {
 		if e.Err != nil {
 			fmt.Fprintf(stderr, "failed %s: %v\n", e.RelPath, e.Err)
 			return
@@ -382,7 +386,7 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 			verb = "updated"
 		}
 		fmt.Fprintf(stdout, "%s %s\n", verb, e.RelPath)
-	})
+	}, *workers)
 	for _, e := range sum.Unreadable {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
 	}

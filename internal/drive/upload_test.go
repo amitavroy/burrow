@@ -980,3 +980,33 @@ func TestUploadLostCreateReplyDoesNotDuplicate(t *testing.T) {
 		t.Errorf("creates=%d method=%s id=%s, want one create then an update", fd.posts, fd.method, info.ID)
 	}
 }
+
+// Workers sharing one Uploader and uploading into the same new folder create
+// it once, and the service is built once.
+func TestUploaderConcurrentUploadsShareOneFolder(t *testing.T) {
+	fd := &uploadDrive{}
+	client, extra := setup(t, fd)
+	u := NewUploader(client, signedIn(t, "r"), cacheAt(t, "root-id"), nil, extra...)
+
+	var wg sync.WaitGroup
+	for i := range 6 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rel := fmt.Sprintf("d/e/f%d.txt", i)
+			if _, err := u.Upload(context.Background(), writeFile(t, 5), rel); err != nil {
+				t.Errorf("Upload %s: %v", rel, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	if len(fd.createdDirs) != 2 { // d and d/e, once each
+		t.Errorf("created %d folders, want 2: %v", len(fd.createdDirs), fd.createdDirs)
+	}
+	if fd.tokenReqs != 1 {
+		t.Errorf("token requests = %d, want 1", fd.tokenReqs)
+	}
+}
