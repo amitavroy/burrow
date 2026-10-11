@@ -302,6 +302,7 @@ create notes/todo.txt
 watcher.Events() -> Debouncer -> Ready(path) -> feeder: EnqueueJobs([path]); wake workers
                                                           |
 failed jobs --(every 5 min: RetryFailedJobs)--> pending
+rename/remove events --(quiet for 3 settle periods: Reconcile)--> jobs for missing files (see Delete to trash)
                                                           v
 workers x N:  ClaimJob -> Lstat the file -> process (upload) -> Complete | Fail | Requeue
               queue empty -> wait for a wake-up or a 1 s poll tick
@@ -333,13 +334,13 @@ syncd: stopped; unfinished uploads stay queued
 
 Three things keep `syncd run` up and safe for days.
 
-**Panics are recovered and logged** (`internal/sync/safe.go`). `safely(name, fn)` runs one unit of work and recovers a panic in it, logging `panic recovered` at error level with the goroutine name (`worker`, `watcher.event`, `debouncer.event`, `debouncer.fire`, `run.feeder`, `run.retry`, `run.watch-errors`, `report`), the panic value, the stack, and the `path` and `job` where known. Every long-lived loop wraps one iteration in it, so a bug costs that event, tick or job and not the daemon.
+**Panics are recovered and logged** (`internal/sync/safe.go`). `safely(name, fn)` runs one unit of work and recovers a panic in it, logging `panic recovered` at error level with the goroutine name (`worker`, `watcher.event`, `debouncer.event`, `debouncer.fire`, `run.feeder`, `run.retry`, `run.rescan`, `run.watch-errors`, `report`), the panic value, the stack, and the `path` and `job` where known. Every long-lived loop wraps one iteration in it, so a bug costs that event, tick or job and not the daemon.
 
 | Where the panic happens | What happens |
 | --- | --- |
 | a worker, while processing or recording a job (an upload bug, a `report` callback) | the job is marked `failed`, an error row `internal error (see log)` appears in `syncd errors`, a `failed <path>: internal error` line is printed, the worker takes the next job; the 5-minute retry tries it again |
 | the watcher or debouncer loop | that one event or timer fire is lost; the loop carries on (a lost debounce entry is dropped and starts again on the next event) |
-| the feeder, retry ticker or watcher-error pump in `Run` | that one iteration is lost |
+| the feeder, retry ticker, rescan timer or watcher-error pump in `Run` | that one iteration is lost |
 | the main goroutine (`syncd` itself) | logged with the stack, `syncd: internal error: ... (see the log)`, exit 1; nothing is left to keep running |
 
 The log never contains file contents (stack traces show function names and addresses). A file that panics every time costs one log entry per retry; there is no retry cap. Tests force panics through a `testPanic` seam that is nil in production, not through a debug flag.
@@ -366,7 +367,7 @@ Rename detection (ticket 25) needs to know that the file that vanished from one 
 | Windows | NTFS file index (64 bit) | `CreateFile` + `GetFileInformationByHandle`, one syscall pair per file; 0 if the file cannot be opened |
 | anything else | unknown (0) | stub |
 
-- **0 means unknown** and is stored as NULL. Nothing fails because an ID is missing; ticket 25 falls back to the hash alone for such files.
+- **0 means unknown** and is stored as NULL. Nothing fails because an ID is missing; a file with an unknown ID is never matched as a rename (see Renames and moves), so it is uploaded as new.
 - **What keeps it:** a rename or move within the filesystem, and an edit. **What changes it:** delete and recreate, a copy, a restore from backup.
 - **Where it is written:** the scan puts it in each `Entry`; `sync` and `run` store it in the row on every upload, update and "content unchanged" refresh (`run` reads it with its `Lstat` at claim time). An unknown ID never erases a known one.
 - **Old and stale rows catch up without any upload:** rows from before this feature have no inode, and a file replaced by a copy with the same size and mtime has a stale one. Whenever a file is judged unchanged (a job's size-and-mtime shortcut, and `Reconcile` at `run` start) a different non-zero inode is written with `SetInode` / `SetInodes` (one transaction). `Diff` (`scan --dry-run --diff`) stays read-only.
