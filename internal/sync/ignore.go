@@ -7,7 +7,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/go-git/go-git/v5/plumbing/format/gitignore"
 )
@@ -20,16 +22,40 @@ const ignoreFile = ".syncignore"
 // save, and node_modules is never worth uploading.
 var defaultIgnores = []string{"node_modules", "*.tmp", "~$*"}
 
+// remoteIgnores are the rules from the config.json shared through Drive. They
+// sit between the defaults and <root>/.syncignore, so the local file can still
+// override them. ponytail: process-wide, set once at start by `sync`/`run`;
+// pass them through Scan/Run options if a second use ever needs a different set.
+var remoteIgnores atomic.Pointer[[]string]
+
+// SetRemoteIgnores sets the shared rules every Matcher made from now on
+// includes, replacing earlier ones. nil or empty clears them.
+func SetRemoteIgnores(rules []string) {
+	if len(rules) == 0 {
+		remoteIgnores.Store(nil)
+		return
+	}
+	r := slices.Clone(rules)
+	remoteIgnores.Store(&r)
+}
+
 // Matcher decides which paths a scan skips, using gitignore syntax.
 type Matcher struct {
 	m gitignore.Matcher
 }
 
-// NewMatcher returns a Matcher holding the default rules followed by the
-// rules in <root>/.syncignore. A missing file is fine; an unreadable one is an
+// NewMatcher returns a Matcher holding the default rules, then the shared
+// ones from Drive (SetRemoteIgnores), then the rules in <root>/.syncignore. A missing file is fine; an unreadable one is an
 // error naming the file.
 func NewMatcher(root string) (*Matcher, error) {
 	lines := append([]string(nil), defaultIgnores...)
+	if r := remoteIgnores.Load(); r != nil {
+		for _, line := range *r {
+			if l := strings.TrimSpace(line); l != "" && !strings.HasPrefix(l, "#") {
+				lines = append(lines, line)
+			}
+		}
+	}
 	path := filepath.Join(root, ignoreFile)
 	f, err := os.Open(path)
 	switch {

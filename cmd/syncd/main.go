@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -494,6 +496,9 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "resuming %d queued jobs\n", n)
 	}
 	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
+	if err := loadSharedConfig(ctx, uploader, stderr); err != nil {
+		return reportDriveErr(stderr, "run", err)
+	}
 	err = burrowsync.Run(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), burrowsync.RunOptions{
 		Workers: *workers,
 		Settle:  *settle,
@@ -614,6 +619,17 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "resuming %d queued jobs\n", n)
 	}
 	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
+	// A bad root fails before any Drive call, as it did before the shared config.
+	if st, err := os.Stat(root); err != nil || !st.IsDir() {
+		if err == nil {
+			err = fmt.Errorf("%s is not a directory", root)
+		}
+		fmt.Fprintf(stderr, "syncd: sync failed: scan root: %v\n", err)
+		return 1
+	}
+	if err := loadSharedConfig(ctx, uploader, stderr); err != nil {
+		return reportDriveErr(stderr, "sync", err)
+	}
 	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), *workers, burrowsync.WithMove(uploader.Move), burrowsync.WithTrash(uploader.Trash), burrowsync.WithMoveDir(uploader.MoveFolder))
 	for _, e := range sum.Unreadable {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
@@ -778,6 +794,90 @@ func errorsCmd(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// loadSharedConfig reads config.json from Drive and applies its ignore rules
+// to every scan and watch of this process. It fails closed: if the settings
+// cannot be read, the run must not upload files they may exclude.
+func loadSharedConfig(ctx context.Context, u *drive.Uploader, stderr io.Writer) error {
+	cfg, err := u.ReadConfig(ctx)
+	if err != nil {
+		return err
+	}
+	burrowsync.SetRemoteIgnores(cfg.Ignore)
+	if n := len(cfg.Ignore); n > 0 {
+		fmt.Fprintf(stderr, "using %d ignore rules from the shared config.json\n", n)
+	}
+	return nil
+}
+
+// editIgnore returns cfg with pattern added (op "add") or removed (op "rm").
+// changed is false when there was nothing to do.
+func editIgnore(cfg drive.Config, op, pattern string) (out drive.Config, changed bool, err error) {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" || strings.HasPrefix(pattern, "#") || strings.ContainsAny(pattern, "\r\n") {
+		return cfg, false, fmt.Errorf("invalid ignore rule %q", pattern)
+	}
+	i := slices.Index(cfg.Ignore, pattern)
+	out = cfg
+	out.Ignore = slices.Clone(cfg.Ignore)
+	switch op {
+	case "add":
+		if i >= 0 {
+			return out, false, nil
+		}
+		out.Ignore = append(out.Ignore, pattern)
+	case "rm":
+		if i < 0 {
+			return out, false, fmt.Errorf("%q is not in the shared ignore rules", pattern)
+		}
+		out.Ignore = slices.Delete(out.Ignore, i, i+1)
+	}
+	return out, true, nil
+}
+
+// configCmd shows and edits the settings file shared through Drive
+// (config.json under MySync). The next `sync` or `run` of any machine applies
+// the ignore rules.
+func configCmd(args []string, stdout, stderr io.Writer) int {
+	const usage = "usage: syncd config show | syncd config ignore add|rm <pattern>"
+	switch {
+	case len(args) == 1 && args[0] == "show":
+	case len(args) == 3 && args[0] == "ignore" && (args[1] == "add" || args[1] == "rm"):
+	default:
+		fmt.Fprintln(stderr, usage)
+		return 2
+	}
+	client, err := drive.LoadClient()
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	u := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, nil)
+	cfg, err := u.ReadConfig(ctx)
+	if err != nil {
+		return reportDriveErr(stderr, "config", err)
+	}
+	if args[0] == "ignore" {
+		next, changed, err := editIgnore(cfg, args[1], args[2])
+		if err != nil {
+			fmt.Fprintf(stderr, "syncd: config: %v\n", err)
+			return 1
+		}
+		if !changed {
+			fmt.Fprintf(stderr, "syncd: %q is already in the shared ignore rules\n", args[2])
+			return 0
+		}
+		if err := u.WriteConfig(ctx, next); err != nil {
+			return reportDriveErr(stderr, "config", err)
+		}
+		cfg = next
+	}
+	b, _ := json.MarshalIndent(cfg, "", "  ")
+	fmt.Fprintln(stdout, string(b))
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -813,6 +913,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runCmd(args[1:], stdout, stderr)
 	case "errors":
 		return errorsCmd(args[1:], stdout, stderr)
+	case "config":
+		return configCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2

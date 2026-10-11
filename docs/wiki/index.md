@@ -195,7 +195,7 @@ Layout: `rel_path` `a/b/c.txt` lands in `MySync/a/b/` with the name `c.txt`. Dir
 
 ```
 syncd scan --dry-run [--root DIR]        (--dry-run required, else usage and exit 2)
-  -> NewMatcher(root): defaults + <root>/.syncignore
+  -> NewMatcher(root): defaults + shared rules from Drive config.json (see Shared config) + <root>/.syncignore
   -> filepath.WalkDir(root):
        ignored dir  -> fs.SkipDir (never walked), counted once
        ignored file -> counted, skipped
@@ -495,4 +495,19 @@ Folders are not jobs; they ride on the per-file jobs, so the file logic stays th
 - **Delete:** after a file is trashed, `trashEmptyDir` walks up from its directory while the directory is gone locally and no tracked file is left below it; the topmost such directory with a cached Drive folder is trashed (Drive trashes what is inside) and `Repo.DeleteFolders` drops its cache entries. A directory that still has rows (files left to trash, or a rename in progress) is kept. Best effort: a failed folder trash only leaves an empty folder in Drive.
 - **Wiring:** `WithMoveDir` / `RunOptions.MoveDir`, both set to `Uploader.MoveFolder` by `syncd sync` and `syncd run`. Without them folders are ignored.
 - **Ceilings:** a folder renamed together with a different parent segment (`a/x -> b/y` where both names change) is not paired; deleted directories that held no files (only empty folders) are not trashed.
+
+## Shared config
+
+`config.json` is a small settings file kept in Drive, so the same ignore rules apply on every machine that uses the account. It is not a database and holds no absolute paths.
+
+```json
+{ "version": 1, "ignore": ["*.log", "build/"] }
+```
+
+- **Where:** directly under `MySync/`, found by the appProperty `burrow_role=config` (not by `rel_path`, so a user's own `config.json` at the sync root is a normal file and never mistaken for the settings; the restore listing, ticket 29, must skip files without a `rel_path` tag). Created on the first write; with none, the config is empty and nothing is created.
+- **Code:** `Uploader.ReadConfig` / `WriteConfig` (`internal/drive/config.go`), under the retry layer. A file larger than 1 MiB, invalid JSON or a `version` above what this build reads (`ErrConfigTooNew`) is an error. Writes replace the content in place (same Drive ID); read-modify-write has no conditional update, so two machines editing in the same moment can lose one edit.
+- **Ignore order:** defaults, then the shared rules, then the root's `.syncignore`, so the local file can still override a shared rule (`!keep.log`). `sync.SetRemoteIgnores` holds the shared rules for the process; every `NewMatcher` (scan, watcher, `Run` lookup) includes them.
+- **When it applies:** `syncd sync` and `syncd run` read `config.json` once at start (`using N ignore rules from the shared config.json` on stderr). They fail closed: if it cannot be read, they exit 1 instead of uploading files the settings may exclude. So a rule added during one run applies on the next, on any machine. `scan` and `watch` do not call Drive and use only the local rules.
+- **Editing:** `syncd config show` prints the stored config; `syncd config ignore add <pattern>` / `rm <pattern>` edit it (an empty pattern, a `#` comment or a multi-line value is rejected; adding a duplicate or removing a missing rule changes nothing).
+- **Not done:** rules added later do not remove files already in Drive, and nothing else is stored yet (the version exists for later settings).
 

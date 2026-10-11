@@ -9,5 +9,6 @@
 // the tag lookup at the start of each attempt keeps a retry from duplicating a file.
 // Describe turns an upload error into the short readable message shown by
 // syncd errors. Uploader.Move renames and moves a Drive file with one update
-// (addParents/removeParents), keeping its ID and revisions.
+// (addParents/removeParents), keeping its ID and revisions. ReadConfig and
+// WriteConfig keep the shared settings file (config.json) under MySync.
 package drive

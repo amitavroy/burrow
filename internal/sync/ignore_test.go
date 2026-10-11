@@ -123,3 +123,22 @@ func TestNewMatcherUnreadableFile(t *testing.T) {
 		t.Fatalf("err = %v, want one naming .syncignore", err)
 	}
 }
+
+// Rules from the Drive config come after the defaults and before the local
+// .syncignore, which can still override them.
+func TestRemoteIgnoresSitBetweenDefaultsAndSyncignore(t *testing.T) {
+	SetRemoteIgnores([]string{"*.log", "# comment", "", "build/"})
+	t.Cleanup(func() { SetRemoteIgnores(nil) })
+
+	m := matcherFor(t, "!keep.log\n")
+
+	checkIgnored(t, m, []ignoreCase{
+		{"a.log", false, true},
+		{"build", true, true},
+		{"keep.log", false, false}, // the local negation wins
+		{"a.txt", false, false},
+		{"x.tmp", false, true}, // defaults still apply
+	})
+	SetRemoteIgnores(nil)
+	checkIgnored(t, matcherFor(t, ""), []ignoreCase{{"a.log", false, false}})
+}

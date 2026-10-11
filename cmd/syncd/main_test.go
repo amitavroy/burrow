@@ -846,3 +846,45 @@ func TestScanDiffShowsLikelyMoves(t *testing.T) {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 }
+
+func TestConfigCommandUsage(t *testing.T) {
+	for _, args := range [][]string{
+		{"config"},
+		{"config", "show", "x"},
+		{"config", "ignore"},
+		{"config", "ignore", "add"},
+		{"config", "ignore", "list", "*.log"},
+		{"config", "ignore", "add", "a", "b"},
+	} {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage: syncd config") {
+			t.Errorf("%v: code = %d, stderr = %q", args, code, stderr.String())
+		}
+	}
+}
+
+func TestEditIgnore(t *testing.T) {
+	base := drive.Config{Version: 1, Ignore: []string{"*.log"}}
+	add, changed, err := editIgnore(base, "add", " build/ ")
+	if err != nil || !changed || strings.Join(add.Ignore, ",") != "*.log,build/" {
+		t.Fatalf("add = %+v, %v, %v", add, changed, err)
+	}
+	if len(base.Ignore) != 1 {
+		t.Error("the input config was modified")
+	}
+	if _, changed, err := editIgnore(add, "add", "*.log"); err != nil || changed {
+		t.Errorf("duplicate add: changed = %v, err = %v", changed, err)
+	}
+	rm, changed, err := editIgnore(add, "rm", "*.log")
+	if err != nil || !changed || strings.Join(rm.Ignore, ",") != "build/" {
+		t.Errorf("rm = %+v, %v, %v", rm, changed, err)
+	}
+	if _, _, err := editIgnore(rm, "rm", "nope"); err == nil {
+		t.Error("removing an absent rule should fail")
+	}
+	for _, bad := range []string{"", "  ", "# comment", "a\nb"} {
+		if _, _, err := editIgnore(base, "add", bad); err == nil {
+			t.Errorf("add %q: want an error", bad)
+		}
+	}
+}
