@@ -9,8 +9,9 @@ import (
 	"net/http"
 	"os"
 	"sync/atomic"
-	"syscall"
 	"time"
+
+	"github.com/amitavroy/burrow/internal/control"
 )
 
 // Control is the part of a running daemon that outside callers (the control
@@ -46,27 +47,18 @@ func (c *Control) touch() {
 	}
 }
 
-// Status is what GET /status returns.
-type Status struct {
-	State    string `json:"state"`               // "running" or "paused"
-	Queue    int    `json:"queue"`               // jobs still to do (pending or running)
-	LastSync string `json:"last_sync,omitempty"` // RFC 3339, UTC; empty until a job has finished
-	Root     string `json:"root"`
-	Version  string `json:"version"`
-}
-
 // ServeControl serves the control API on a Unix domain socket at sock until
 // ctx is cancelled, then removes the socket. It returns once the socket is
 // listening. The socket is readable and writable by its owner only, which is
 // the access control: nothing else on the machine, and no web page, can reach it.
 //
-//	GET  /status  -> Status as JSON; info fills in what Control does not know
+//	GET  /status  -> control.Status as JSON; info fills in what Control does not know
 //	POST /pause   -> pause, replies with the new Status
 //	POST /resume  -> resume, replies with the new Status
 //
 // A socket file left by a dead process is replaced; callers hold the single
 // instance lock, so no live daemon can own it.
-func ServeControl(ctx context.Context, sock string, c *Control, info func(context.Context) (Status, error)) error {
+func ServeControl(ctx context.Context, sock string, c *Control, info func(context.Context) (control.Status, error)) error {
 	if err := os.Remove(sock); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("control socket: %w", err)
 	}
@@ -113,38 +105,3 @@ func ServeControl(ctx context.Context, sock string, c *Control, info func(contex
 	}()
 	return nil
 }
-
-// ControlRequest sends one request to a daemon's control socket and returns
-// the Status it replies with. method and path are as in ServeControl. It returns
-// ErrNoDaemon when nothing is listening.
-func ControlRequest(ctx context.Context, sock, method, path string) (Status, error) {
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return (&net.Dialer{}).DialContext(ctx, "unix", sock)
-		}},
-	}
-	req, err := http.NewRequestWithContext(ctx, method, "http://syncd"+path, nil)
-	if err != nil {
-		return Status{}, err
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) {
-			return Status{}, ErrNoDaemon
-		}
-		return Status{}, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return Status{}, fmt.Errorf("daemon replied %s", resp.Status)
-	}
-	var st Status
-	if err := json.NewDecoder(resp.Body).Decode(&st); err != nil {
-		return Status{}, fmt.Errorf("daemon reply: %w", err)
-	}
-	return st, nil
-}
-
-// ErrNoDaemon means no syncd run is listening on the control socket.
-var ErrNoDaemon = errors.New("syncd is not running")

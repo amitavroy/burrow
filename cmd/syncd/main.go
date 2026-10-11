@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/amitavroy/burrow/internal/control"
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
 	burrowsync "github.com/amitavroy/burrow/internal/sync"
@@ -502,9 +503,9 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	ctl := &burrowsync.Control{}
 	sock := ctlSocket()
-	info := func(ctx context.Context) (burrowsync.Status, error) {
+	info := func(ctx context.Context) (control.Status, error) {
 		n, err := repo.CountJobs(ctx)
-		return burrowsync.Status{Queue: n, Root: root, Version: Version}, err
+		return control.Status{Queue: n, Root: root, Version: Version}, err
 	}
 	if err := burrowsync.ServeControl(ctx, sock, ctl, info); err != nil {
 		fmt.Fprintf(stderr, "syncd: run failed: %v\n", err)
@@ -1039,10 +1040,10 @@ func restoreCmd(args []string, stdout, stderr io.Writer) int {
 
 // ctlSocket is where a running `syncd run` listens for control requests: next
 // to the state database, never in the sync root.
-func ctlSocket() string { return filepath.Join(filepath.Dir(dbPath()), "syncd.sock") }
+func ctlSocket() string { return filepath.Join(filepath.Dir(dbPath()), control.SocketFile) }
 
 // formatStatus renders a daemon status as the lines `syncd ctl` prints.
-func formatStatus(st burrowsync.Status, now time.Time) string {
+func formatStatus(st control.Status, now time.Time) string {
 	last := "never"
 	if t, err := time.Parse(time.RFC3339, st.LastSync); err == nil {
 		last = fmt.Sprintf("%s (%s ago)", st.LastSync, now.Sub(t).Round(time.Second))
@@ -1069,9 +1070,9 @@ func ctlCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	st, err := burrowsync.ControlRequest(ctx, ctlSocket(), method, path)
+	st, err := control.Request(ctx, ctlSocket(), method, path)
 	switch {
-	case errors.Is(err, burrowsync.ErrNoDaemon):
+	case errors.Is(err, control.ErrNoDaemon):
 		fmt.Fprintln(stderr, "syncd: not running (start it with `syncd run`)")
 		return 1
 	case err != nil:

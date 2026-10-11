@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 
 	"github.com/adrg/xdg"
+
+	"github.com/amitavroy/burrow/internal/control"
 )
 
 // dbFile is the database location under the app data dir (Local, not Roaming,
@@ -23,4 +25,11 @@ const logFile = "burrow/logs/syncd.log"
 // computes the path.
 func LogPath() string {
 	return filepath.Join(xdg.DataHome, filepath.FromSlash(logFile))
+}
+
+// SocketPath returns where a running `syncd run` listens for control requests:
+// next to the database, never in the sync root. Like DefaultPath it only
+// computes the path.
+func SocketPath() string {
+	return filepath.Join(filepath.Dir(DefaultPath()), control.SocketFile)
 }

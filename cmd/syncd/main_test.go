@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amitavroy/burrow/internal/control"
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
 	burrowsync "github.com/amitavroy/burrow/internal/sync"
@@ -949,8 +950,8 @@ func TestCtlCommand(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	ctl := &burrowsync.Control{}
-	info := func(context.Context) (burrowsync.Status, error) {
-		return burrowsync.Status{Queue: 4, Root: "/data/MySync", Version: "9.9"}, nil
+	info := func(context.Context) (control.Status, error) {
+		return control.Status{Queue: 4, Root: "/data/MySync", Version: "9.9"}, nil
 	}
 	if err := burrowsync.ServeControl(ctx, ctlSocket(), ctl, info); err != nil {
 		t.Fatal(err)
@@ -970,7 +971,7 @@ func TestCtlCommand(t *testing.T) {
 
 func TestFormatStatusLastSync(t *testing.T) {
 	now := time.Date(2026, 10, 11, 12, 0, 30, 0, time.UTC)
-	got := formatStatus(burrowsync.Status{State: "running", LastSync: "2026-10-11T12:00:00Z"}, now)
+	got := formatStatus(control.Status{State: "running", LastSync: "2026-10-11T12:00:00Z"}, now)
 	if !strings.Contains(got, "last sync: 2026-10-11T12:00:00Z (30s ago)") {
 		t.Errorf("status = %q", got)
 	}

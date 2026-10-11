@@ -313,7 +313,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 32 | M6 Restore | Rebuild-from-Drive test | End-to-end test: delete the DB, restore, sync again | **Checkpoint:** nothing is lost or re-uploaded | 31 | => Done
 | 33 | M7 Daemon and UI | Control API | Local socket or localhost HTTP: status, pause, resume | `syncd ctl status` prints queue length and last sync | 21 | => Done
 | 34 | M7 Daemon and UI | OS service install | systemd user unit, launchd agent, Windows startup entry | Daemon starts on login and survives a reboot | 21 | => Done
-| 35 | M7 Daemon and UI | Tray app: status | `cmd/syncui` with `fyne.io/systray`: status, pause and resume | Tray icon shows the state; pause stops uploads | 33 |
+| 35 | M7 Daemon and UI | Tray app: status | `cmd/syncui` with `fyne.io/systray`: status, pause and resume | Tray icon shows the state; pause stops uploads | 33 | => Done
 | 36 | M7 Daemon and UI | Tray app: errors and settings | Error log from `sync_errors`, open logs folder, debug toggle, change root | **Checkpoint:** v1 usable day to day without a terminal | 18, 35 |
 | 37 | M7 Daemon and UI | Release builds | Cross-compile for Linux, macOS, Windows (e.g. GoReleaser) | Download a binary from a GitHub release and run it | 34 |
 | 38 | P2 Two-way sync | Changes poller | Store `startPageToken`; poll `changes.list` | `syncd changes` prints edits made in the Drive web UI | 29 |

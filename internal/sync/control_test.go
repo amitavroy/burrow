@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/amitavroy/burrow/internal/control"
 )
 
 // shortSock returns a socket path short enough for the sun_path limit.
@@ -25,7 +27,9 @@ func serve(t *testing.T, sock string, c *Control, queue int) context.CancelFunc 
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	info := func(context.Context) (Status, error) { return Status{Queue: queue, Root: "/r", Version: "v"}, nil }
+	info := func(context.Context) (control.Status, error) {
+		return control.Status{Queue: queue, Root: "/r", Version: "v"}, nil
+	}
 	if err := ServeControl(ctx, sock, c, info); err != nil {
 		t.Fatal(err)
 	}
@@ -37,25 +41,25 @@ func TestControlAPIStatusPauseResume(t *testing.T) {
 	serve(t, sock, c, 3)
 	ctx := context.Background()
 
-	st, err := ControlRequest(ctx, sock, "GET", "/status")
+	st, err := control.Request(ctx, sock, "GET", "/status")
 	if err != nil || st.State != "running" || st.Queue != 3 || st.Root != "/r" || st.LastSync != "" {
 		t.Fatalf("status = %+v, %v", st, err)
 	}
-	if st, err = ControlRequest(ctx, sock, "POST", "/pause"); err != nil || st.State != "paused" || !c.Paused() {
+	if st, err = control.Request(ctx, sock, "POST", "/pause"); err != nil || st.State != "paused" || !c.Paused() {
 		t.Errorf("pause = %+v, %v, paused %v", st, err, c.Paused())
 	}
 	c.touch()
-	if st, _ = ControlRequest(ctx, sock, "GET", "/status"); st.State != "paused" || st.LastSync == "" {
+	if st, _ = control.Request(ctx, sock, "GET", "/status"); st.State != "paused" || st.LastSync == "" {
 		t.Errorf("status while paused = %+v", st)
 	}
-	if st, err = ControlRequest(ctx, sock, "POST", "/resume"); err != nil || st.State != "running" || c.Paused() {
+	if st, err = control.Request(ctx, sock, "POST", "/resume"); err != nil || st.State != "running" || c.Paused() {
 		t.Errorf("resume = %+v, %v", st, err)
 	}
 	// Wrong method or path is refused, and changes nothing.
-	if _, err := ControlRequest(ctx, sock, "GET", "/pause"); err == nil || c.Paused() {
+	if _, err := control.Request(ctx, sock, "GET", "/pause"); err == nil || c.Paused() {
 		t.Errorf("GET /pause: err = %v, paused = %v", err, c.Paused())
 	}
-	if _, err := ControlRequest(ctx, sock, "GET", "/nope"); err == nil {
+	if _, err := control.Request(ctx, sock, "GET", "/nope"); err == nil {
 		t.Error("unknown path should fail")
 	}
 }
@@ -80,15 +84,15 @@ func TestControlReplacesAStaleSocketAndReportsNoDaemon(t *testing.T) {
 	}
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	ln.Close()
-	if _, err := ControlRequest(context.Background(), sock, "GET", "/status"); !errors.Is(err, ErrNoDaemon) {
-		t.Errorf("stale socket: err = %v, want ErrNoDaemon", err)
+	if _, err := control.Request(context.Background(), sock, "GET", "/status"); !errors.Is(err, control.ErrNoDaemon) {
+		t.Errorf("stale socket: err = %v, want control.ErrNoDaemon", err)
 	}
-	if _, err := ControlRequest(context.Background(), filepath.Join(filepath.Dir(sock), "none"), "GET", "/status"); !errors.Is(err, ErrNoDaemon) {
-		t.Errorf("no socket: err = %v, want ErrNoDaemon", err)
+	if _, err := control.Request(context.Background(), filepath.Join(filepath.Dir(sock), "none"), "GET", "/status"); !errors.Is(err, control.ErrNoDaemon) {
+		t.Errorf("no socket: err = %v, want control.ErrNoDaemon", err)
 	}
 
 	serve(t, sock, &Control{}, 1) // replaces the stale file
-	if st, err := ControlRequest(context.Background(), sock, "GET", "/status"); err != nil || st.Queue != 1 {
+	if st, err := control.Request(context.Background(), sock, "GET", "/status"); err != nil || st.Queue != 1 {
 		t.Errorf("status = %+v, %v", st, err)
 	}
 }

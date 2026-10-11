@@ -602,11 +602,11 @@ $ syncd ctl resume
 ```
 
 - **Transport:** HTTP over a Unix domain socket, `syncd.sock` next to the state database (never in the sync root). A socket instead of a localhost port because a port is reachable by every local user and, through DNS rebinding or a stray form post, by web pages; the socket is `0600`, so only the owner can use it. Go supports Unix sockets on Windows 10+ too, so the code has no OS branch.
-- **Routes** (`sync.ServeControl`, `internal/sync/control.go`): `GET /status`, `POST /pause`, `POST /resume`. Every reply is the JSON `Status` (`state`, `queue` = jobs pending or running, `last_sync` in RFC 3339 UTC or absent, `root`, `version`). Other methods and paths are refused.
+- **Routes** (server: `sync.ServeControl`, `internal/sync/control.go`; client and the `Status` type: `internal/control`, which has no dependency on the sync engine so the tray app can use it): `GET /status`, `POST /pause`, `POST /resume`. Every reply is the JSON `Status` (`state`, `queue` = jobs pending or running, `last_sync` in RFC 3339 UTC or absent, `root`, `version`). Other methods and paths are refused.
 - **Pause** (`Control`): workers take no new job while paused; uploads already running finish. The watcher, the reconcile and the retry timer keep queueing, so nothing is lost, and `queue` shows the backlog. Resuming takes effect within one poll period (1 s). Pause is not remembered: a restart runs normally. A one-shot `syncd sync` has no control socket.
 - **Last sync** is when a job last finished without an error (an upload, update, move, trash or a no-op job), kept in memory only; it reads `never` after a start until the first job finishes.
 - **Lifecycle:** `syncd run` opens the socket after taking the database lock and removes it on exit. A socket left by a crash is replaced at the next start (the lock guarantees no live owner); `syncd ctl` on a stale file or none says `syncd: not running (start it with `syncd run`)` and exits 1.
-- **Not done:** no authentication beyond file permissions, no streaming of events (the UI polls `/status`), and no route for changing the root or the debug level (ticket 36).
+- **Not done:** no authentication beyond file permissions, no streaming of events (the tray polls `/status`, see Tray app), and no route for changing the root or the debug level (ticket 36).
 
 ## Service install
 
@@ -633,4 +633,21 @@ syncd service status                 # installed? enabled? active?
 - **At boot:** the Linux user manager starts at login; for a start at boot without logging in, run `loginctl enable-linger $USER` once (the command prints the hint). macOS launch agents and the Windows Run key are per login by nature.
 - **Safe to repeat:** `install` again overwrites the registration (macOS boots the old one out first), and `uninstall` on something not installed succeeds. A running daemon keeps running after `uninstall` until it is stopped.
 - **Not verified on a real system:** the tests render the files and check the commands, but no real systemd, launchd or registry was driven. Install on a test machine, log out and in (or reboot), and check `syncd ctl status` before relying on it, especially on macOS and Windows. Windows shows a console window at login until the tray app (ticket 35) replaces it.
+
+## Tray app
+
+`syncui` (`cmd/syncui`, built with `make build-ui` into `bin/syncui`) puts one icon in the system tray for a running `syncd run`. It is a separate process by design (ADR-001): it only talks to the control socket, so quitting or crashing it never stops syncing, and the daemon never links the GUI toolkit.
+
+| Icon | Meaning | Menu |
+| --- | --- | --- |
+| green | syncing is running | `Running · 3 queued · last sync 12s ago`, **Pause uploads** |
+| amber | paused | `Paused · 5 queued · ...`, **Resume uploads** |
+| gray | `syncd` is not running or not reachable | `syncd is not running`, the pause item greyed out |
+
+- **How it works:** every 2 s it asks `GET /status` (`control.Request`); clicking the pause or resume item sends `POST /pause` or `POST /resume` and shows the reply at once. The tooltip repeats the state in words (`Burrow: paused, 5 queued`), so the colors are not the only signal. **Quit tray** closes the icon only; `syncd` keeps running.
+- **Code:** `view.go` turns one poll into a `view` (icon kind, tooltip, status line, toggle label and action) and holds `poll` and `toggle`; `icon.go` draws the three icons as PNGs in code (a smoothed circle, no image files) and wraps them in an ICO on Windows; `main.go` is the only file that touches `fyne.io/systray`. Everything but `main.go` is tested, including `poll` and `toggle` against a real `sync.ServeControl` socket, so the pause round trip is checked without a display.
+- **Socket:** `store.SocketPath()`, the same file `syncd run` serves and `syncd ctl` reads.
+- **Platforms:** Linux uses the StatusNotifier D-Bus interface (pure Go; some desktops, GNOME among them, need a tray extension to show the icon). macOS needs cgo, so the macOS `make vet` skips `cmd/syncui`. On Windows build with `-ldflags "-H=windowsgui"` so no console window opens. `syncui` has to run in your desktop session, not as a system service.
+- **Not verified on a display:** the tests cover the logic and the icon data; on this build the process starts and runs without error, but nobody has looked at the icon on Linux, macOS or Windows yet. Start `syncd run` (or the service), run `bin/syncui`, and check the icon, the tooltip and the pause item.
+- **Not done:** no autostart for the tray (ticket 36 or the service install can add it), no errors list, logs folder, debug toggle or root change (ticket 36), and no notifications.
 

@@ -3,6 +3,7 @@ module github.com/amitavroy/burrow
 go 1.27.1
 
 require (
+	fyne.io/systray v1.12.2
 	github.com/adrg/xdg v0.5.3
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/go-git/go-git/v5 v5.19.3
