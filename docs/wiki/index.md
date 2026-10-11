@@ -608,3 +608,29 @@ $ syncd ctl resume
 - **Lifecycle:** `syncd run` opens the socket after taking the database lock and removes it on exit. A socket left by a crash is replaced at the next start (the lock guarantees no live owner); `syncd ctl` on a stale file or none says `syncd: not running (start it with `syncd run`)` and exits 1.
 - **Not done:** no authentication beyond file permissions, no streaming of events (the UI polls `/status`), and no route for changing the root or the debug level (ticket 36).
 
+## Service install
+
+`syncd service install` registers `syncd run` with the OS so it starts when you log in and comes back after a crash or reboot. Run it once, from the folder that holds your `.env`.
+
+```
+syncd service install [--root DIR]   # write the registration, start it now
+syncd service uninstall              # stop and remove it
+syncd service status                 # installed? enabled? active?
+```
+
+| OS | Registration | Started and removed with |
+| --- | --- | --- |
+| Linux | systemd user unit `~/.config/systemd/user/syncd.service` | `systemctl --user daemon-reload`, `enable --now`; `disable --now` |
+| macOS | launch agent `~/Library/LaunchAgents/dev.burrow.syncd.plist` | `launchctl bootstrap gui/<uid> <plist>`; `bootout` |
+| Windows | Run-key value `syncd` under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` | `reg add`; `reg delete` |
+
+- **Code:** `cmd/syncd/service.go`. The three registrations are rendered by pure functions (`systemdUnit`, `launchdPlist`, `windowsCommand`) from one `serviceSpec` (this binary's absolute path, the absolute sync root, the working directory); the OS calls go through a replaceable `runCommand`, so the tests (all three OSes, on any machine) never touch a real service manager. Nothing is built per OS, so `make vet` covers all of it.
+- **The binary and the root:** the path is the running binary with symlinks resolved (`os.Executable`), so install from the binary you mean to keep (not `go run`). The root is `--root` or `~/MySync`, made absolute.
+- **The OAuth client:** the daemon reads it from `.env` in its working directory, so the service starts in the folder where you ran `install`, and install refuses (exit 1, nothing written) if that folder has no `.env`. The secret is not copied into the unit file. Windows has no working directory for a Run entry, so the entry runs `cmd /c cd /d "<dir>" && "<exe>" run --root "<root>"`.
+- **Quoting:** systemd arguments are double-quoted with `\`, `"`, `%` and `$` escaped; plist values are XML-escaped.
+- **Restarts:** systemd `Restart=on-failure` with `RestartSec=60`, launchd `KeepAlive` on a failed exit with `ThrottleInterval 60`. A lost sign-in makes `run` exit 1, so it retries once a minute until you run `syncd login`; a clean stop (exit 0) is not restarted. If another `run` or `sync` holds the database lock, the service also exits 1 and retries.
+- **Logs:** syncd's own rotating file (see Logging) is the log; on Linux its stdout also goes to the journal (`journalctl --user -u syncd.service`), on macOS the console streams are dropped.
+- **At boot:** the Linux user manager starts at login; for a start at boot without logging in, run `loginctl enable-linger $USER` once (the command prints the hint). macOS launch agents and the Windows Run key are per login by nature.
+- **Safe to repeat:** `install` again overwrites the registration (macOS boots the old one out first), and `uninstall` on something not installed succeeds. A running daemon keeps running after `uninstall` until it is stopped.
+- **Not verified on a real system:** the tests render the files and check the commands, but no real systemd, launchd or registry was driven. Install on a test machine, log out and in (or reboot), and check `syncd ctl status` before relying on it, especially on macOS and Windows. Windows shows a console window at login until the tray app (ticket 35) replaces it.
+

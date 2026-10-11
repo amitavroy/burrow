@@ -1125,6 +1125,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return restoreCmd(args[1:], stdout, stderr)
 	case "ctl":
 		return ctlCmd(args[1:], stdout, stderr)
+	case "service":
+		return serviceCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2

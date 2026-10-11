@@ -125,6 +125,10 @@ bin/syncd run [--root DIR] [--workers N] [--settle 1s]   # Ctrl+C to stop
 
 While `syncd run` is going, `syncd ctl status` (from another terminal) prints its state, the queue length and the time of the last finished job; `syncd ctl pause` stops new uploads (the queue keeps filling) and `syncd ctl resume` continues. It talks to `syncd.sock` in the data directory, readable only by you.
 
+## Starting at login
+
+`syncd service install [--root DIR]` (run it from the folder with your `.env`) registers `syncd run` with the OS and starts it: a systemd user unit on Linux, a launch agent on macOS, a Run-key entry on Windows. It starts when you log in and is restarted after a failure. `syncd service status` shows whether it is installed and active, `syncd service uninstall` removes it. On Linux, `loginctl enable-linger $USER` starts it at boot even before you log in. Use `syncd ctl status` to see what it is doing.
+
 ## Watching (preview)
 
 ```
