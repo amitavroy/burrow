@@ -796,3 +796,101 @@ func TestSyncWorkersFatalErrorStopsTheOthers(t *testing.T) {
 		t.Errorf("queued = %d, want 3", n)
 	}
 }
+
+func errorsOf(t *testing.T, repo *store.Repo) map[string]store.SyncError {
+	t.Helper()
+	list, err := repo.ListErrors(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := map[string]store.SyncError{}
+	for _, e := range list {
+		m[e.RelPath] = e
+	}
+	return m
+}
+
+// A failed file leaves a readable error; the run that fixes it clears it.
+func TestSyncRecordsAndClearsFileErrors(t *testing.T) {
+	root := syncTree(t)
+	repo := openRepo(t)
+	quota := fmt.Errorf("upload a/b.txt: %w", &googleapi.Error{Code: 403, Errors: []googleapi.ErrorItem{{Reason: "storageQuotaExceeded"}}})
+	u := &uploads{failOn: map[string]error{"a/b.txt": quota}}
+
+	if _, err := Sync(context.Background(), root, repo, u.fn, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	got := errorsOf(t, repo)
+	if len(got) != 1 || got["a/b.txt"].Message != "Drive storage quota exceeded" || got["a/b.txt"].Detail != quota.Error() {
+		t.Fatalf("errors = %+v", got)
+	}
+
+	if _, err := Sync(context.Background(), root, repo, (&uploads{}).fn, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got := errorsOf(t, repo); len(got) != 0 {
+		t.Errorf("errors after the fix = %+v", got)
+	}
+}
+
+// A repeat failure counts another attempt on the same row.
+func TestSyncRepeatedFailureCountsAttempts(t *testing.T) {
+	root := syncTree(t)
+	repo := openRepo(t)
+	u := &uploads{failOn: map[string]error{"z.txt": errors.New("boom")}}
+	for range 2 {
+		if _, err := Sync(context.Background(), root, repo, u.fn, func(Event) {}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if e := errorsOf(t, repo)["z.txt"]; e.Attempts != 2 || e.Message != "boom" {
+		t.Errorf("row = %+v", e)
+	}
+}
+
+// A file that is skipped as unchanged, or whose job is dropped because the
+// file is gone, loses its error row.
+func TestSyncClearsErrorsForSkippedAndDroppedFiles(t *testing.T) {
+	ctx := context.Background()
+	root := syncTree(t)
+	repo := openRepo(t)
+	if _, err := Sync(ctx, root, repo, (&uploads{}).fn, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.RecordError(ctx, "a.txt", "network problem", "") // synced already: skipped next run
+	_ = repo.RecordError(ctx, "ghost.txt", "network problem", "")
+	_ = repo.EnqueueJobs(ctx, []string{"ghost.txt"})
+
+	if _, err := Sync(ctx, root, repo, (&uploads{}).fn, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got := errorsOf(t, repo); len(got) != 0 {
+		t.Errorf("errors = %+v, want none", got)
+	}
+}
+
+// A lost sign-in aborts the run and records no file error.
+func TestSyncSignInLostRecordsNoFileError(t *testing.T) {
+	root := syncTree(t)
+	repo := openRepo(t)
+	u := &uploads{failOn: map[string]error{"a.txt": drive.ErrNotSignedIn}}
+	_, _ = Sync(context.Background(), root, repo, u.fn, func(Event) {})
+	if got := errorsOf(t, repo); len(got) != 0 {
+		t.Errorf("errors = %+v", got)
+	}
+}
+
+// An error row for a file that has since been deleted is dropped.
+func TestSyncDropsErrorRowsForDeletedFiles(t *testing.T) {
+	ctx := context.Background()
+	root := syncTree(t)
+	repo := openRepo(t)
+	_ = repo.RecordError(ctx, "deleted.txt", "network problem", "")
+
+	if _, err := Sync(ctx, root, repo, (&uploads{}).fn, func(Event) {}); err != nil {
+		t.Fatal(err)
+	}
+	if got := errorsOf(t, repo); len(got) != 0 {
+		t.Errorf("errors = %+v", got)
+	}
+}

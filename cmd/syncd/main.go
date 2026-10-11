@@ -391,6 +391,9 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
 	}
 	fmt.Fprintf(stderr, "%d uploaded, %d updated, %d already synced, %d failed, %d ignored\n", sum.Uploaded, sum.Updated, sum.Synced, sum.Failed, sum.Ignored)
+	if sum.Failed > 0 || len(sum.Unreadable) > 0 {
+		fmt.Fprintln(stderr, "see 'syncd errors' for details")
+	}
 	switch {
 	case errors.Is(err, context.Canceled):
 		fmt.Fprintln(stderr, "syncd: sync interrupted")
@@ -437,6 +440,39 @@ func history(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// errorsCmd lists the files that are failing to sync, newest first. It reads
+// the state database only; no Drive call or sign-in is needed.
+func errorsCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("errors", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: syncd errors")
+		return 2
+	}
+	repo, err := store.OpenRepo(dbPath())
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: errors failed: %v\n", err)
+		return 1
+	}
+	defer repo.Close()
+	errs, err := repo.ListErrors(context.Background())
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: errors failed: %v\n", err)
+		return 1
+	}
+	if len(errs) == 0 {
+		fmt.Fprintln(stdout, "no errors")
+		return 0
+	}
+	for _, e := range errs {
+		fmt.Fprintf(stdout, "%s  %s  %s, will retry\n", time.Unix(0, e.LastSeen).UTC().Format(time.RFC3339), e.RelPath, e.Message)
+	}
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -466,6 +502,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return syncCmd(args[1:], stdout, stderr)
 	case "history":
 		return history(args[1:], stdout, stderr)
+	case "errors":
+		return errorsCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2

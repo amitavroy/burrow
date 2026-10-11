@@ -74,11 +74,17 @@ func retryable(err error) (retryAfter time.Duration, ok bool) {
 		}
 		return retryAfter, true
 	}
+	return 0, isNetworkError(err)
+}
+
+// isNetworkError reports a transient network failure: a timeout, a reset or
+// refused connection, or a stream cut short.
+func isNetworkError(err error) bool {
 	var ne net.Error
 	if errors.As(err, &ne) && ne.Timeout() {
-		return 0, true
+		return true
 	}
-	return 0, errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ECONNREFUSED) ||
 		errors.Is(err, io.ErrUnexpectedEOF)
 }
 

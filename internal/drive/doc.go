@@ -7,4 +7,6 @@
 // memory use does not grow with file size. Upload retries 429, 5xx, rate-limit 403s
 // and transient network errors with jittered exponential backoff (5 attempts);
 // the tag lookup at the start of each attempt keeps a retry from duplicating a file.
+// Describe turns an upload error into the short readable message shown by
+// syncd errors.
 package drive

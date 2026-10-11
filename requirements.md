@@ -296,7 +296,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 15 | M3 Robust uploads | Resumable uploads | 8 MB chunked resumable uploads streamed from disk | A 1 GB file uploads with flat memory use | 12 | => Done
 | 16 | M3 Robust uploads | Retries with backoff | Exponential backoff with jitter on 403, 429 and 5xx | Tests against a fake server that returns 429 then 200 | 12 | => Done
 | 17 | M3 Robust uploads | Persistent job queue | Jobs table in SQLite; a worker drains it with bounded concurrency | Kill the process mid-sync; on restart it resumes | 8, 12 | => Done
-| 18 | M3 Robust uploads | Error events table | `sync_errors` / `events` table; `syncd errors` command | A failed upload shows as a readable line, e.g. "quota exceeded, will retry" | 17 |
+| 18 | M3 Robust uploads | Error events table | `sync_errors` / `events` table; `syncd errors` command | A failed upload shows as a readable line, e.g. "quota exceeded, will retry" | 17 | => Done
 | 19 | M4 Live watching | Recursive watcher | `fsnotify` goroutine; watch every subfolder, including new ones | `syncd watch` logs create, write, rename and remove events | 1 |
 | 20 | M4 Live watching | Debounce and stabilize | Per-path timers; enqueue only when size and mtime are stable | One editor save produces one queued job | 19 |
 | 21 | M4 Live watching | Foreground daemon | `syncd run`: watcher to queue to worker, graceful shutdown on Ctrl+C | A saved file appears in Drive within a minute | 17, 20 |

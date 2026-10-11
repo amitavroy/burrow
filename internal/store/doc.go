@@ -6,5 +6,6 @@
 // RecordUpload and Revisions keep the file_revisions history written on each
 // upload. EnqueueJobs, ClaimJob, CompleteJob, FailJob, RequeueJob and
 // ResetRunningJobs are the persistent job queue (the jobs table) that a sync
-// drains, so interrupted work resumes.
+// drains, so interrupted work resumes. RecordError, ClearError and ListErrors
+// keep the sync_errors table: one readable row per file that is failing.
 package store

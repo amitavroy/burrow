@@ -268,6 +268,24 @@ syncd sync [--root DIR] [--workers N]
 - Only one `syncd` may use the database at a time; the reset of `running` jobs relies on it.
 - Not here: the watcher feeding the queue (tickets 19 to 21), delete and rename jobs (25 to 27), run-wide rate limiting.
 
+## Errors
+
+A file that fails to sync leaves a row in the `sync_errors` table, so the user (and later the tray UI) can read what is wrong without parsing logs. `syncd errors` prints it.
+
+```
+$ syncd errors
+2026-10-11T10:02:11Z  docs/a.pdf    Drive storage quota exceeded, will retry
+2026-10-11T10:02:09Z  img/big.png   network problem, will retry
+```
+
+- **Table:** `sync_errors(rel_path UNIQUE, message, detail, attempts, first_seen, last_seen)`. One row per file, the latest error. A repeat updates the row and counts another attempt. `message` is readable; `detail` is the raw error text, for debugging (no tokens or request bodies, same rule as the logs).
+- **Written** by the sync worker when a file fails (`internal/sync/sync.go`), and for entries the scan could not read (permission denied on a file or folder).
+- **Cleared** when the file next syncs (uploaded, updated, or skipped because Drive already has the content), when its job is dropped because the file is gone, and for a failing file that has been deleted. So the list is always what is wrong now; `no errors` means every file is fine.
+- **Messages** come from `drive.Describe` (`internal/drive/describe.go`): `Drive storage quota exceeded`, `Drive rate limit hit` (429 and the rate-limit 403s), `permission denied by Drive`, `file or folder not found in Drive`, `Drive is unavailable (HTTP 503)`, `network problem`, `not signed in`, `sign-in expired`, `cannot read file: permission denied`, `file is gone`. Anything else is the first line of the error text, cut to 200 characters.
+- **"will retry"** is on every line because the next `syncd sync` queues every failed file again (see Job queue). If something later stops being retried, a flag column is added then.
+- `syncd errors` reads the database only: no sign-in, no network. Newest first, UTC. Exit 0 even when there are errors. `syncd sync` ends with `see 'syncd errors' for details` when a file failed or could not be read.
+- Not recorded: run-level errors with no file, such as a lost sign-in (reported by the exit code) or `max_user_watches` (tickets 23, 33 to 36). A failed job for a file that was deleted stays `failed` in the jobs table; it is harmless and not shown.
+
 ## Retries
 
 Every file's Drive work (connect, tag lookup, folder creation, create or update) runs inside `withRetry` (`internal/drive/retry.go`), called from `Uploader.Upload`.

@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	stdsync "sync"
 	"time"
 
@@ -79,6 +81,9 @@ func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload Uplo
 	for i, e := range res.Entries {
 		entries[e.RelPath], paths[i] = e, e.RelPath
 	}
+	if err := noteScanErrors(ctx, root, repo, res, entries); err != nil {
+		return run.sum, err
+	}
 	if err := repo.EnqueueJobs(ctx, paths); err != nil {
 		return run.sum, err
 	}
@@ -103,6 +108,41 @@ func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload Uplo
 	wg.Wait()
 	// All workers are done, so nothing else touches run.
 	return run.sum, fatal
+}
+
+// noteScanErrors records an error for every entry the scan could not read, and
+// drops error rows that no scan result or job can clear any more: a file that
+// was failing and has since been deleted. A readable file's row is cleared by
+// its job.
+func noteScanErrors(ctx context.Context, root string, repo *store.Repo, res Result, entries map[string]Entry) error {
+	unreadable := map[string]bool{}
+	for _, serr := range res.Errors {
+		var pe *fs.PathError
+		if !errors.As(serr, &pe) {
+			continue
+		}
+		rel, err := filepath.Rel(root, pe.Path)
+		if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+			continue
+		}
+		rel = filepath.ToSlash(rel)
+		unreadable[rel] = true
+		if err := repo.RecordError(ctx, rel, drive.Describe(serr), serr.Error()); err != nil {
+			return err
+		}
+	}
+	current, err := repo.ListErrors(ctx)
+	if err != nil {
+		return err
+	}
+	for _, e := range current {
+		if _, ok := entries[e.RelPath]; !ok && !unreadable[e.RelPath] {
+			if err := repo.ClearError(ctx, e.RelPath); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // runState is what the workers of one SyncWorkers share: the summary and the
@@ -144,7 +184,7 @@ func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFun
 		e, ok := entries[job.RelPath]
 		if !ok { // left over from an earlier run; the file is gone or ignored now
 			slog.Debug("dropped job, file not in scan", "path", job.RelPath, "job", job.ID)
-			if err := repo.CompleteJob(bg, job.ID); err != nil {
+			if err := errors.Join(repo.CompleteJob(bg, job.ID), repo.ClearError(bg, job.RelPath)); err != nil {
 				return err
 			}
 			continue
@@ -157,9 +197,12 @@ func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFun
 			}
 			return fatal
 		case fileErr != nil:
-			err = repo.FailJob(bg, job.ID, fileErr.Error())
+			err = errors.Join(
+				repo.FailJob(bg, job.ID, fileErr.Error()),
+				repo.RecordError(bg, job.RelPath, drive.Describe(fileErr), fileErr.Error()),
+			)
 		default:
-			err = repo.CompleteJob(bg, job.ID)
+			err = errors.Join(repo.CompleteJob(bg, job.ID), repo.ClearError(bg, job.RelPath))
 		}
 		if err != nil {
 			return err

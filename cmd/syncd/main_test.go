@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -292,7 +293,7 @@ func TestDB(t *testing.T) {
 			if code := run([]string{"db", "status"}, &stdout, &stderr); code != 0 {
 				t.Fatalf("run #%d: code = %d, stderr = %q", i+1, code, stderr.String())
 			}
-			for _, want := range []string{"Path:    " + path, "Version: 4", "files", "folders", "jobs", "goose_db_version"} {
+			for _, want := range []string{"Path:    " + path, "Version: 5", "files", "folders", "jobs", "sync_errors", "goose_db_version"} {
 				if !strings.Contains(stdout.String(), want) {
 					t.Errorf("run #%d: stdout %q missing %q", i+1, stdout.String(), want)
 				}
@@ -582,5 +583,36 @@ func TestHistory(t *testing.T) {
 				t.Errorf("code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+func TestErrorsCommand(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "burrow.db")
+	oldDB := dbPath
+	dbPath = func() string { return path }
+	t.Cleanup(func() { dbPath = oldDB })
+
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"errors"}, &stdout, &stderr); code != 0 || stdout.String() != "no errors\n" {
+		t.Fatalf("empty: code = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
+	}
+
+	repo, err := store.OpenRepo(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = repo.RecordError(context.Background(), "docs/a.pdf", "Drive storage quota exceeded", "raw")
+	repo.Close()
+
+	stdout.Reset()
+	code := run([]string{"errors"}, &stdout, &stderr)
+	re := regexp.MustCompile(`^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ  docs/a\.pdf  Drive storage quota exceeded, will retry\n$`)
+	if code != 0 || !re.MatchString(stdout.String()) {
+		t.Errorf("code = %d, stdout = %q", code, stdout.String())
+	}
+
+	stderr.Reset()
+	if code := run([]string{"errors", "x"}, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage: syncd errors") {
+		t.Errorf("extra arg: code = %d, stderr = %q", code, stderr.String())
 	}
 }
