@@ -100,7 +100,7 @@ func SyncWorkers(ctx context.Context, root string, repo *store.Repo, upload Uplo
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := worker(ctx, root, repo, upload, run, entries); err != nil {
+			if err := worker(ctx, root, repo, upload, run, func(rel string) (Entry, bool) { e, ok := entries[rel]; return e, ok }, nil); err != nil {
 				stop(err)
 			}
 		}()
@@ -164,9 +164,11 @@ func (r *runState) add(count func(*Summary), e *Event) {
 	}
 }
 
-// worker claims and processes jobs until the queue is empty. It returns the
-// error that must stop the run, or nil.
-func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, run *runState, entries map[string]Entry) error {
+// worker claims and processes jobs. lookup finds the file a job names (false:
+// the file is gone or ignored, so the job is dropped). When the queue is empty
+// the worker returns nil, or, if idle is set, calls it to wait for more work
+// and goes on while it returns nil. It returns the error that must stop the run.
+func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, run *runState, lookup func(rel string) (Entry, bool), idle func(context.Context) error) error {
 	// Recording the outcome of a job is local and quick, so it ignores
 	// cancellation: an interrupt must not leave a finished job queued.
 	bg := context.WithoutCancel(ctx)
@@ -176,14 +178,20 @@ func worker(ctx context.Context, root string, repo *store.Repo, upload UploadFun
 		}
 		job, err := repo.ClaimJob(ctx)
 		if errors.Is(err, store.ErrNoJob) {
-			return nil
+			if idle == nil {
+				return nil
+			}
+			if err := idle(ctx); err != nil {
+				return err
+			}
+			continue
 		}
 		if err != nil {
 			return err
 		}
-		e, ok := entries[job.RelPath]
+		e, ok := lookup(job.RelPath)
 		if !ok { // left over from an earlier run; the file is gone or ignored now
-			slog.Debug("dropped job, file not in scan", "path", job.RelPath, "job", job.ID)
+			slog.Debug("dropped job, file is gone or ignored", "path", job.RelPath, "job", job.ID)
 			if err := errors.Join(repo.CompleteJob(bg, job.ID), repo.ClearError(bg, job.RelPath)); err != nil {
 				return err
 			}

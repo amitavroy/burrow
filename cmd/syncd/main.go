@@ -341,6 +341,80 @@ func resolveRoot(dir string) (string, error) {
 	return filepath.Join(home, "MySync"), nil
 }
 
+// reportEvent prints one upload outcome: uploaded and updated lines on stdout,
+// failures on stderr.
+func reportEvent(stdout, stderr io.Writer) func(burrowsync.Event) {
+	return func(e burrowsync.Event) {
+		if e.Err != nil {
+			fmt.Fprintf(stderr, "failed %s: %v\n", e.RelPath, e.Err)
+			return
+		}
+		verb := "uploaded"
+		if e.Updated {
+			verb = "updated"
+		}
+		fmt.Fprintf(stdout, "%s %s\n", verb, e.RelPath)
+	}
+}
+
+// runCmd is the foreground daemon: it watches the sync root and uploads what
+// changes until Ctrl+C. Jobs left by an earlier run are processed first. A
+// lost sign-in stops it with exit 1.
+func runCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	rootDir := fs.String("root", "", "sync root to watch and upload (default ~/MySync)")
+	workers := fs.Int("workers", 3, "files to upload at once (1 to 16)")
+	settle := fs.Duration("settle", time.Second, "how long a file must stay unchanged before it is uploaded")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 || *workers < 1 || *workers > 16 || *settle <= 0 {
+		fmt.Fprintln(stderr, "usage: syncd run [--root DIR] [--workers N] [--settle DURATION]  (N is 1 to 16)")
+		return 2
+	}
+	root, err := resolveRoot(*rootDir)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: run failed: %v\n", err)
+		return 1
+	}
+	client, err := drive.LoadClient()
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	repo, err := store.OpenRepo(dbPath())
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: run failed: %v\n", err)
+		return 1
+	}
+	defer repo.Close()
+
+	if n, err := repo.CountJobs(ctx); err == nil && n > 0 {
+		fmt.Fprintf(stderr, "resuming %d queued jobs\n", n)
+	}
+	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
+	err = burrowsync.Run(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), burrowsync.RunOptions{
+		Workers: *workers,
+		Settle:  *settle,
+		OnStart: func(dirs int) {
+			fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", dirs, root)
+		},
+		OnWatchError: func(err error) { fmt.Fprintf(stderr, "syncd: watch error: %v\n", err) },
+	})
+	if err != nil {
+		if errors.Is(err, drive.ErrNotSignedIn) || errors.Is(err, drive.ErrSessionExpired) {
+			return reportDriveErr(stderr, "run", err)
+		}
+		fmt.Fprintf(stderr, "syncd: run failed: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stderr, "syncd: stopped; unfinished uploads stay queued")
+	return 0
+}
+
 // syncCmd uploads every file under the sync root to Drive, several at a time.
 // Files already recorded in the state database are skipped. Per-file failures
 // are reported and make the exit code 1; a lost sign-in or Ctrl+C stops the run.
@@ -381,17 +455,7 @@ func syncCmd(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "resuming %d queued jobs\n", n)
 	}
 	uploader := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
-	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, func(e burrowsync.Event) {
-		if e.Err != nil {
-			fmt.Fprintf(stderr, "failed %s: %v\n", e.RelPath, e.Err)
-			return
-		}
-		verb := "uploaded"
-		if e.Updated {
-			verb = "updated"
-		}
-		fmt.Fprintf(stdout, "%s %s\n", verb, e.RelPath)
-	}, *workers)
+	sum, err := burrowsync.SyncWorkers(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), *workers)
 	for _, e := range sum.Unreadable {
 		fmt.Fprintf(stderr, "syncd: skipped: %v\n", e)
 	}
@@ -586,6 +650,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return history(args[1:], stdout, stderr)
 	case "watch":
 		return watchCmd(args[1:], stdout, stderr)
+	case "run":
+		return runCmd(args[1:], stdout, stderr)
 	case "errors":
 		return errorsCmd(args[1:], stdout, stderr)
 	default:

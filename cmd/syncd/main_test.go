@@ -294,7 +294,7 @@ func TestDB(t *testing.T) {
 			if code := run([]string{"db", "status"}, &stdout, &stderr); code != 0 {
 				t.Fatalf("run #%d: code = %d, stderr = %q", i+1, code, stderr.String())
 			}
-			for _, want := range []string{"Path:    " + path, "Version: 5", "files", "folders", "jobs", "sync_errors", "goose_db_version"} {
+			for _, want := range []string{"Path:    " + path, "Version: 6", "files", "folders", "jobs", "sync_errors", "goose_db_version"} {
 				if !strings.Contains(stdout.String(), want) {
 					t.Errorf("run #%d: stdout %q missing %q", i+1, stdout.String(), want)
 				}
@@ -465,6 +465,9 @@ func TestSync(t *testing.T) {
 		wantStderr string
 	}{
 		{name: "extra argument is a usage error", args: []string{"sync", "x"}, wantCode: 2, wantStderr: "usage: syncd sync"},
+		{name: "run extra argument", args: []string{"run", "x"}, wantCode: 2, wantStderr: "usage: syncd run"},
+		{name: "run zero workers", args: []string{"run", "--workers", "0"}, wantCode: 2, wantStderr: "usage: syncd run"},
+		{name: "run bad settle", args: []string{"run", "--settle", "0s"}, wantCode: 2, wantStderr: "usage: syncd run"},
 		{name: "zero workers is a usage error", args: []string{"sync", "--workers", "0"}, wantCode: 2, wantStderr: "usage: syncd sync"},
 		{name: "too many workers is a usage error", args: []string{"sync", "--workers", "17"}, wantCode: 2, wantStderr: "usage: syncd sync"},
 		{name: "unknown flag", args: []string{"sync", "--bogus"}, wantCode: 2, wantStderr: "flag provided but not defined"},

@@ -100,6 +100,14 @@ The root defaults to `~/MySync`. Each file is uploaded into the Drive folder tha
 Every uploaded file gets a row in the state database (see below). A file whose size and mtime match its row is skipped without being read; otherwise it is hashed (MD5) and skipped if Drive already has that content, or replaced in place (same Drive file ID) if not. So a second run uploads nothing, touching a file uploads nothing, editing one file updates only that file, and an interrupted run (Ctrl+C) continues where it stopped. The database is disposable: delete `burrow.db` and the next run finds each file in Drive by its path and updates it in place, without duplicates. `sync` needs the database, so it stops with an error if it cannot open.
 
 
+## Running live
+
+```
+bin/syncd run [--root DIR] [--workers N] [--settle 1s]   # Ctrl+C to stop
+```
+
+`run` watches the sync root and uploads each file a couple of seconds after you stop changing it: the foreground version of the daemon. It prints `uploaded <path>` / `updated <path>` / `failed <path>: ...` lines like `sync`, finishes jobs left over from an earlier run first, tries failed uploads again every 5 minutes, and on Ctrl+C leaves unfinished uploads queued. It does not scan the root at start (a file changed while it was stopped needs `syncd sync` for now), and renames and deletes are not propagated yet. Use only one of `run` and `sync` at a time.
+
 ## Watching (preview)
 
 ```

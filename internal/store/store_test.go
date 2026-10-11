@@ -64,8 +64,8 @@ func TestOpenIsIdempotent(t *testing.T) {
 		if err := db.QueryRow("SELECT MAX(version_id) FROM goose_db_version").Scan(&version); err != nil {
 			t.Fatalf("read version: %v", err)
 		}
-		if version != 5 {
-			t.Errorf("open #%d: version = %d, want 5", i+1, version)
+		if version != 6 {
+			t.Errorf("open #%d: version = %d, want 6", i+1, version)
 		}
 		db.Close()
 	}
@@ -132,8 +132,8 @@ func TestStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status: %v", err)
 	}
-	if info.Version != 5 {
-		t.Errorf("Version = %d, want 5", info.Version)
+	if info.Version != 6 {
+		t.Errorf("Version = %d, want 6", info.Version)
 	}
 	want := []string{"file_revisions", "files", "folders", "goose_db_version", "jobs", "sync_errors"}
 	if !reflect.DeepEqual(info.Tables, want) {

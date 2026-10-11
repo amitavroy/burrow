@@ -44,9 +44,9 @@ func TestJobsEnqueueLeavesRunningJobAlone(t *testing.T) {
 	if _, err := r.ClaimJob(ctx); !errors.Is(err, ErrNoJob) {
 		t.Fatalf("a running job was claimed twice: %v", err)
 	}
-	_ = r.CompleteJob(ctx, j.ID)
-	if n, _ := r.CountJobs(ctx); n != 0 {
-		t.Fatalf("count = %d after complete", n)
+	_ = r.CompleteJob(ctx, j.ID) // queued again meanwhile, so it comes back once
+	if n, _ := r.CountJobs(ctx); n != 1 {
+		t.Fatalf("count = %d after complete, want 1 (re-saved while running)", n)
 	}
 }
 
@@ -160,5 +160,57 @@ func TestJobsConcurrentClaimsAreDistinct(t *testing.T) {
 		if c != 1 {
 			t.Errorf("%s claimed %d times", p, c)
 		}
+	}
+}
+
+// A path queued again while its job runs is not lost: the job is queued once more when it finishes.
+func TestJobsEnqueueWhileRunningRequeuesOnComplete(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	_ = r.EnqueueJobs(ctx, []string{"a"})
+	j, _ := r.ClaimJob(ctx)
+	_ = r.EnqueueJobs(ctx, []string{"a"}) // re-saved during the upload
+	_ = r.EnqueueJobs(ctx, []string{"a"}) // twice is still once
+	if _, err := r.ClaimJob(ctx); !errors.Is(err, ErrNoJob) {
+		t.Fatalf("a running job was claimed again: %v", err)
+	}
+	if err := r.CompleteJob(ctx, j.ID); err != nil {
+		t.Fatal(err)
+	}
+	again, err := r.ClaimJob(ctx)
+	if err != nil || again.RelPath != "a" {
+		t.Fatalf("claim after complete = %+v, %v; want the job again", again, err)
+	}
+	_ = r.CompleteJob(ctx, again.ID)
+	if n, _ := r.CountJobs(ctx); n != 0 {
+		t.Fatalf("count = %d; the second completion must delete the job", n)
+	}
+}
+
+func TestJobsFailWhileDirtyGoesToPending(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	_ = r.EnqueueJobs(ctx, []string{"a"})
+	j, _ := r.ClaimJob(ctx)
+	_ = r.EnqueueJobs(ctx, []string{"a"})
+	_ = r.FailJob(ctx, j.ID, "boom")
+	if n, _ := r.CountJobs(ctx); n != 1 {
+		t.Fatalf("count = %d, want the dirty failed job back in pending", n)
+	}
+}
+
+func TestJobsRetryFailed(t *testing.T) {
+	r, _ := openTempRepo(t)
+	ctx := context.Background()
+	_ = r.EnqueueJobs(ctx, []string{"a", "b"})
+	a, _ := r.ClaimJob(ctx)
+	_, _ = r.ClaimJob(ctx) // b stays running
+	_ = r.FailJob(ctx, a.ID, "boom")
+	n, err := r.RetryFailedJobs(ctx)
+	if err != nil || n != 1 {
+		t.Fatalf("retry = %d, %v; want 1 (running jobs are not touched)", n, err)
+	}
+	if c, _ := r.CountJobs(ctx); c != 2 {
+		t.Fatalf("count = %d, want 2", c)
 	}
 }

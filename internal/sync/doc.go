@@ -12,5 +12,7 @@
 // remove events under the root, recursively (fsnotify is not), including for
 // directories created later; it applies the same ignore rules and does no
 // debouncing. Debouncer sits behind it: one ready rel_path per file whose size
-// and mtime have stopped changing, so an editor save is one job.
+// and mtime have stopped changing, so an editor save is one job. Run joins
+// Watcher, Debouncer, the job queue and the workers into the foreground
+// daemon behind syncd run.
 package sync

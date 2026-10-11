@@ -258,7 +258,7 @@ syncd sync [--root DIR] [--workers N]
 ```
 
 - **Table:** `jobs(id, rel_path UNIQUE, status, attempts, last_error, created_at, updated_at)`. Status is `pending`, `running` or `failed`. A finished job is deleted: `files` and `file_revisions` already record what happened.
-- **One job per path.** Queueing a path again does not duplicate it: pending and failed jobs go to pending, a running one is left alone.
+- **One job per path.** Queueing a path again does not duplicate it: pending and failed jobs go to pending; a running one keeps running and is marked `dirty`, so it is queued again when it finishes (see Running).
 - **Claim** is a single `UPDATE ... RETURNING` run by the repo's owner goroutine, so two workers never get the same job. Oldest (lowest id) first.
 - **Resume:** kill the process (even `kill -9`) mid-sync and run `syncd sync` again. It prints `resuming N queued jobs`, goes through what was left, and uploads nothing twice, because each file's `files` row is written before its job is deleted and the skip check (size and mtime, then MD5) makes a repeated job cheap.
 - **Cancel or lost sign-in:** the job in flight goes back to pending, and every worker stops. Other per-file errors mark the job `failed` (with `last_error`, never a request body) and the run goes on; the next run queues that file again. Each failure also gets a readable row in `sync_errors` (see Errors).
@@ -293,6 +293,40 @@ create notes/todo.txt
 - **Overflow:** if the OS queue overflows (`ErrEventOverflow`), the error comes out of `Errors()` and is logged at warn. Missed events are what the startup scan of ticket 22 recovers.
 - **Not here:** a clear `max_user_watches` message and panic recovery (ticket 23; until then the OS error names the directory it failed on), rename detection by inode and hash (25), symlinked folders (not followed, as in `scan`).
 - Linux inotify has a per-user watch limit (`fs.inotify.max_user_watches`, often 8192 to 65536); a very large tree can hit it.
+
+## Running
+
+`syncd run [--root DIR] [--workers N] [--settle D]` is the foreground daemon: it watches the sync root and uploads what changes until Ctrl+C. It joins the pieces described above (Watching, Job queue, Retries, Errors) in one process; installing it as a service and controlling it from a UI come later.
+
+```
+watcher.Events() -> Debouncer -> Ready(path) -> feeder: EnqueueJobs([path]); wake workers
+                                                          |
+failed jobs --(every 5 min: RetryFailedJobs)--> pending
+                                                          v
+workers x N:  ClaimJob -> Lstat the file -> process (upload) -> Complete | Fail | Requeue
+              queue empty -> wait for a wake-up or a 1 s poll tick
+Ctrl+C: stop feeder, debouncer, watcher; cancel uploads in flight; their jobs go back to pending; exit 0
+```
+
+```
+$ syncd run --root ~/MySync
+watching 14 directories under /home/me/MySync (Ctrl+C to stop)
+uploaded notes/todo.txt
+updated notes/todo.txt
+failed big/video.mov: network problem
+^C
+syncd: stopped; unfinished uploads stay queued
+```
+
+- **Code:** `sync.Run` (`internal/sync/run.go`). The workers are the ones `Sync` uses (`worker()` in `sync.go`); the two modes differ only in how a job's file is found (`Sync`: the scan; `Run`: an `Lstat` at claim time) and what happens when the queue is empty (`Sync`: stop; `Run`: wait).
+- **Latency:** a save is uploaded about two settle periods after the last write (default `--settle 1s`) plus the upload itself; well inside "within about a minute".
+- **Start:** jobs left by an earlier run are reset and processed first (`resuming N queued jobs` on stderr). There is **no scan of the root**, so a file changed while `run` was not running is not picked up until `syncd sync` (startup reconciliation is ticket 22).
+- **A file saved again while it is uploading** is not lost: `EnqueueJobs` marks the running job `dirty`, and when that job finishes it goes back to pending instead of being deleted, so the file is uploaded once more with its newest content (and not a third time). `FailJob` does the same for a dirty job.
+- **Failures:** a failed upload leaves the job `failed` and a row in `syncd errors`. While running, `RetryFailedJobs` puts failed jobs back to pending every 5 minutes, so "will retry" is true; a file that keeps failing is retried every 5 minutes forever. Within one attempt the Retries layer already backs off.
+- **Lost sign-in** stops the run (the workers cannot make progress): in-flight jobs are requeued and `syncd run` exits 1 with the same hint as `sync`. Other errors from the database also stop it.
+- **Watcher problems** (a queue overflow, a folder that could not be watched) are logged and printed on stderr, and the run goes on. Missed events are what ticket 22 recovers.
+- **Ctrl+C** cancels the uploads in flight; they resume from the start next time (resumable sessions are not persisted). Exit code 0.
+- **Limits:** only one `syncd` process may use the database at a time (not enforced; `run` and `sync` together would reset each other's running jobs; tracked with ticket 23). Renames and deletes are not propagated: a rename uploads the new name and leaves the old file in Drive (ticket 25), a delete leaves the Drive file (ticket 26).
 
 ## Errors
 
