@@ -504,10 +504,27 @@ Folders are not jobs; they ride on the per-file jobs, so the file logic stays th
 { "version": 1, "ignore": ["*.log", "build/"] }
 ```
 
-- **Where:** directly under `MySync/`, found by the appProperty `burrow_role=config` (not by `rel_path`, so a user's own `config.json` at the sync root is a normal file and never mistaken for the settings; the restore listing, ticket 29, must skip files without a `rel_path` tag). Created on the first write; with none, the config is empty and nothing is created.
+- **Where:** directly under `MySync/`, found by the appProperty `burrow_role=config` (not by `rel_path`, so a user's own `config.json` at the sync root is a normal file and never mistaken for the settings; the remote listing skips it). Created on the first write; with none, the config is empty and nothing is created.
 - **Code:** `Uploader.ReadConfig` / `WriteConfig` (`internal/drive/config.go`), under the retry layer. A file larger than 1 MiB, invalid JSON or a `version` above what this build reads (`ErrConfigTooNew`) is an error. Writes replace the content in place (same Drive ID); read-modify-write has no conditional update, so two machines editing in the same moment can lose one edit.
 - **Ignore order:** defaults, then the shared rules, then the root's `.syncignore`, so the local file can still override a shared rule (`!keep.log`). `sync.SetRemoteIgnores` holds the shared rules for the process; every `NewMatcher` (scan, watcher, `Run` lookup) includes them.
 - **When it applies:** `syncd sync` and `syncd run` read `config.json` once at start (`using N ignore rules from the shared config.json` on stderr). They fail closed: if it cannot be read, they exit 1 instead of uploading files the settings may exclude. So a rule added during one run applies on the next, on any machine. `scan` and `watch` do not call Drive and use only the local rules.
 - **Editing:** `syncd config show` prints the stored config; `syncd config ignore add <pattern>` / `rm <pattern>` edit it (an empty pattern, a `#` comment or a multi-line value is rejected; adding a duplicate or removing a missing rule changes nothing).
 - **Not done:** rules added later do not remove files already in Drive, and nothing else is stored yet (the version exists for later settings).
+
+## Remote listing
+
+`syncd remote ls` prints what Drive holds under `MySync/`, the first half of the restore flow (the next tickets download and match it). It needs sign-in and reads Drive only.
+
+```
+$ syncd remote ls
+docs/b.txt  12  9e107d9d372bb6826bd81d3542a419d6  1AbC...
+notes/todo.txt  340  e4d909c290d0fb1ca068ffaddf22cbd0  1XyZ...
+2 files
+```
+
+- **Lines:** `rel_path`, size in bytes, MD5, Drive file ID, sorted by `rel_path` (stdout); the `N files` count goes to stderr. Duplicate paths are all listed, ordered by ID.
+- **Code:** `Uploader.ListTree` (`internal/drive/tree.go`), under the retry layer: it walks the folders from the `MySync` root, one `files.list` per folder (`'<id>' in parents and trashed = false`, 1000 per page, all pages), recursing into folders. Fields read: ID, name, MIME type, `md5Checksum`, `size`, `headRevisionId`, `appProperties`. With the `drive.file` scope that is exactly the files syncd created. A retry starts the walk over.
+- **Path:** the `rel_path` tag when present, else the folder path plus the name, marked `(no rel_path tag)` in the output; the tag is the safety net that survives a renamed Drive folder.
+- **Skipped:** folders, trashed files and the shared settings file (see Shared config). Native Google Docs have no MD5 or size; they would show 0 and an empty MD5, but syncd never creates them.
+- **Not done:** no tree view (the flat sorted list pipes and greps), and no comparison with the local folder (restore, ticket 31).
 

@@ -878,6 +878,40 @@ func configCmd(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// formatRemote is one `remote ls` line: rel_path, size, MD5, Drive file ID.
+// A file without a rel_path tag is marked, since it was not put there by syncd.
+func formatRemote(f drive.RemoteFile) string {
+	line := fmt.Sprintf("%s  %d  %s  %s", f.RelPath, f.Size, f.MD5, f.ID)
+	if !f.Tagged {
+		line += "  (no rel_path tag)"
+	}
+	return line
+}
+
+// remoteCmd lists what Drive holds under MySync: one line per file.
+func remoteCmd(args []string, stdout, stderr io.Writer) int {
+	if len(args) != 1 || args[0] != "ls" {
+		fmt.Fprintln(stderr, "usage: syncd remote ls")
+		return 2
+	}
+	client, err := drive.LoadClient()
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	files, err := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, nil).ListTree(ctx)
+	if err != nil {
+		return reportDriveErr(stderr, "remote ls", err)
+	}
+	for _, f := range files {
+		fmt.Fprintln(stdout, formatRemote(f))
+	}
+	fmt.Fprintf(stderr, "%d files\n", len(files))
+	return 0
+}
+
 func run(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: syncd <command>")
@@ -915,6 +949,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return errorsCmd(args[1:], stdout, stderr)
 	case "config":
 		return configCmd(args[1:], stdout, stderr)
+	case "remote":
+		return remoteCmd(args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2

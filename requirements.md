@@ -307,7 +307,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 26 | M5 Rename and delete | Delete to trash | Local delete sets `trashed: true` in Drive | **Checkpoint:** a deleted file sits in the Drive trash | 21 | => Done
 | 27 | M5 Rename and delete | Folder rename and delete | Apply moves and trashes to whole folders and their cache entries | Renaming a folder moves it in Drive with its children intact | 25, 26 | => Done
 | 28 | M6 Restore | config.json | Read and write the shared settings file in Drive (ignore rules, version) | Ignore rules edited on one run apply on the next | 5 | => Done
-| 29 | M6 Restore | List Drive tree | List all files under `MySync/` with `appProperties`, `md5Checksum`, `headRevisionId` | `syncd remote ls` prints the remote tree | 5 |
+| 29 | M6 Restore | List Drive tree | List all files under `MySync/` with `appProperties`, `md5Checksum`, `headRevisionId` | `syncd remote ls` prints the remote tree | 5 | => Done
 | 30 | M6 Restore | Safe download | Download to a temp file, then atomic rename into place | Downloaded file matches the Drive MD5 | 29 |
 | 31 | M6 Restore | Restore command | `syncd restore --root <path>`: match, download missing, keep both on mismatch | A fresh folder fills from Drive with DB rows created | 28, 30 |
 | 32 | M6 Restore | Rebuild-from-Drive test | End-to-end test: delete the DB, restore, sync again | **Checkpoint:** nothing is lost or re-uploaded | 31 |

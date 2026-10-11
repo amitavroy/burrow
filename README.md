@@ -105,6 +105,10 @@ Every uploaded file gets a row in the state database (see below). A file whose s
 
 `syncd config show` prints `config.json`, a small settings file kept in `MySync/` in Drive. `syncd config ignore add '*.log'` (or `rm`) edits its ignore rules; every `syncd sync` or `syncd run`, on any machine, reads them at start, after the built-in defaults and before the root's `.syncignore` (which can still override them). If the file cannot be read, `sync` and `run` stop instead of uploading what it may exclude.
 
+## Remote listing
+
+`syncd remote ls` prints every file under `MySync/` in Drive: `rel_path`, size, MD5 and Drive file ID, one per line, sorted by path (the count goes to stderr). It needs sign-in and does not touch the local folder or database.
+
 ## Running live
 
 ```

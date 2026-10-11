@@ -888,3 +888,18 @@ func TestEditIgnore(t *testing.T) {
 		}
 	}
 }
+
+func TestRemoteCommand(t *testing.T) {
+	for _, args := range [][]string{{"remote"}, {"remote", "ls", "x"}, {"remote", "rm"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(args, &stdout, &stderr); code != 2 || !strings.Contains(stderr.String(), "usage: syncd remote ls") {
+			t.Errorf("%v: code = %d, stderr = %q", args, code, stderr.String())
+		}
+	}
+	if got := formatRemote(drive.RemoteFile{ID: "f1", RelPath: "a/b.txt", Size: 12, MD5: "abc", Tagged: true}); got != "a/b.txt  12  abc  f1" {
+		t.Errorf("line = %q", got)
+	}
+	if got := formatRemote(drive.RemoteFile{ID: "f2", RelPath: "x.txt"}); !strings.HasSuffix(got, "(no rel_path tag)") {
+		t.Errorf("untagged line = %q", got)
+	}
+}
