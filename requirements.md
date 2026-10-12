@@ -315,7 +315,7 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 34 | M7 Daemon and UI | OS service install | systemd user unit, launchd agent, Windows startup entry | Daemon starts on login and survives a reboot | 21 | => Done
 | 35 | M7 Daemon and UI | Tray app: status | `cmd/syncui` with `fyne.io/systray`: status, pause and resume | Tray icon shows the state; pause stops uploads | 33 | => Done
 | 36 | M7 Daemon and UI | Tray app: errors and settings | Error log from `sync_errors`, open logs folder, debug toggle, change root | **Checkpoint:** v1 usable day to day without a terminal | 18, 35 | => Done
-| 37 | M7 Daemon and UI | Release builds | Cross-compile for Linux, macOS, Windows (e.g. GoReleaser) | Download a binary from a GitHub release and run it | 34 |
+| 37 | M7 Daemon and UI | Release builds | Cross-compile for Linux, macOS, Windows (e.g. GoReleaser) | Download a binary from a GitHub release and run it | 34 | => Done
 | 38 | P2 Two-way sync | Changes poller | Store `startPageToken`; poll `changes.list` | `syncd changes` prints edits made in the Drive web UI | 29 | => Done
 | 39 | P2 Two-way sync | Three-way decision | Pure function over local, Drive and base; a test per table row | All decision-table tests pass | 13 |
 | 40 | P2 Two-way sync | Downloads and echo suppression | Apply remote changes; ignore the watcher event for the expected MD5 | A Drive-side edit lands locally with no re-upload loop | 30, 38, 39 |
