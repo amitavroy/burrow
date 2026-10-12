@@ -24,6 +24,9 @@
 // file deleted locally is moved to the Drive trash (TrashFunc). A renamed folder is
 // moved as a folder (MoveDirFunc) and an emptied, deleted one is trashed.
 // Decide is the pure three-way compare (local, Drive, base) behind phase 2.
+// Pull applies Drive edits with it: Run polls the changes feed (ChangeSource),
+// downloads files only Drive changed, and drops the upload job a download
+// itself causes (an expected MD5 per path).
 // Restore fills a root from a Drive listing on a new machine. Control and
 // ServeControl let a running daemon be paused, resumed and queried over a Unix
 // socket.

@@ -9,6 +9,7 @@ import (
 	stdsync "sync"
 	"time"
 
+	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
 )
 
@@ -22,6 +23,7 @@ type RunOptions struct {
 	Control    *Control      // lets the control API pause, resume and read the last sync; nil: not steerable
 	Trash      TrashFunc     // trashes the Drive file of a deleted file; nil: deletes are not propagated
 	PollEvery  time.Duration // an idle worker looks for work at least this often; default 1s
+	Changes    *ChangeSource // applies edits made on Drive (Pull); nil: one-way, Drive edits are ignored
 
 	// OnStart is called once the watch is up, with the number of directories
 	// watched. OnWatchError is called for each problem the watcher reports (a
@@ -108,7 +110,8 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 			}
 		}
 	}
-	state := &runState{report: report, move: opts.Move, moveDir: opts.MoveDir, trash: opts.Trash, ctl: opts.Control}
+	exp := &expected{}
+	state := &runState{expect: exp, report: report, move: opts.Move, moveDir: opts.MoveDir, trash: opts.Trash, ctl: opts.Control}
 
 	// Ready paths become jobs.
 	wg.Add(1)
@@ -191,6 +194,40 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 			}
 		}
 	}()
+
+	// Edits made on Drive are pulled now and then.
+	if src := opts.Changes; src != nil {
+		every := src.Every
+		if every <= 0 {
+			every = 30 * time.Second
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			t := time.NewTicker(every)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					if opts.Control.Paused() {
+						continue
+					}
+					safely("run.pull", func() {
+						err := pollChanges(ctx, root, repo, src, exp)
+						switch {
+						case err == nil, ctx.Err() != nil:
+						case errors.Is(err, drive.ErrNotSignedIn), errors.Is(err, drive.ErrSessionExpired):
+							stop(err)
+						default:
+							slog.Warn("pulling Drive changes failed, will retry", "err", err)
+						}
+					})
+				}
+			}
+		}()
+	}
 
 	// Watcher problems are reported, not fatal.
 	wg.Add(1)

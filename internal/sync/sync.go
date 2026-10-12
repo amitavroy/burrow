@@ -195,6 +195,7 @@ type runState struct {
 	move   MoveFunc  // nil: renames are uploaded as new files
 	trash  TrashFunc // nil: deleted files are left in Drive
 
+	expect    *expected     // nil: no downloads in flight (one-shot sync)
 	moveDir   MoveDirFunc   // nil: a renamed folder's files move one by one into a new folder
 	ctl       *Control      // nil: not steerable (one-shot sync)
 	moveDirMu stdsync.Mutex // one folder move at a time, so workers moving siblings do it once
@@ -375,6 +376,13 @@ func process(ctx context.Context, log *slog.Logger, root string, repo *store.Rep
 		return nil, err
 	}
 	path := filepath.Join(root, filepath.FromSlash(e.RelPath))
+	// A download is landing this file: its content is already on Drive.
+	if want, ok := run.expect.get(e.RelPath); ok {
+		if sum, err := fileMD5(path); err == nil && sum == want {
+			log.Debug("echo of a download, not uploading")
+			return nil, nil
+		}
+	}
 	// known is a row for a file already on Drive: changed content is
 	// replaced in place, not uploaded as a new file.
 	known := err == nil && row.DriveFileID != ""
