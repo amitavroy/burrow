@@ -319,4 +319,4 @@ The build splits into 41 tickets of roughly half a day to a day each, ordered so
 | 38 | P2 Two-way sync | Changes poller | Store `startPageToken`; poll `changes.list` | `syncd changes` prints edits made in the Drive web UI | 29 | => Done
 | 39 | P2 Two-way sync | Three-way decision | Pure function over local, Drive and base; a test per table row | All decision-table tests pass | 13 | => Done
 | 40 | P2 Two-way sync | Downloads and echo suppression | Apply remote changes; ignore the watcher event for the expected MD5 | A Drive-side edit lands locally with no re-upload loop | 30, 38, 39 | => Done
-| 41 | P2 Two-way sync | Conflict copies and edge cases | Keep-both naming; edit vs delete, rename vs edit, both created | Editing on two machines leaves both versions everywhere | 40 |
+| 41 | P2 Two-way sync | Conflict copies and edge cases | Keep-both naming; edit vs delete, rename vs edit, both created | Editing on two machines leaves both versions everywhere | 40 | => Done

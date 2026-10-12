@@ -539,7 +539,7 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 		Trash:   uploader.Trash,
 		MoveDir: uploader.MoveFolder,
 		Control: ctl,
-		Changes: &burrowsync.ChangeSource{Start: uploader.StartPageToken, List: uploader.Changes, Download: uploader.Download},
+		Changes: &burrowsync.ChangeSource{Host: func() string { h, _ := os.Hostname(); return h }(), Start: uploader.StartPageToken, List: uploader.Changes, Download: uploader.Download},
 		OnStart: func(dirs int) {
 			fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", dirs, root)
 		},

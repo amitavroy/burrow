@@ -26,7 +26,9 @@
 // Decide is the pure three-way compare (local, Drive, base) behind phase 2.
 // Pull applies Drive edits with it: Run polls the changes feed (ChangeSource),
 // downloads files only Drive changed, and drops the upload job a download
-// itself causes (an expected MD5 per path).
+// itself causes (an expected MD5 per path). Edits on both sides keep both: the
+// local file becomes a conflicted copy and syncs up as a new file; edit beats
+// delete in either direction.
 // Restore fills a root from a Drive listing on a new machine. Control and
 // ServeControl let a running daemon be paused, resumed and queried over a Unix
 // socket.
