@@ -586,6 +586,19 @@ sync a tree -> new empty database ("delete the DB")
 - **Why it holds:** restore writes the same row an upload would (Drive ID, size, mtime, inode, MD5s, base revision), so reconcile and the sync's size-and-mtime check see "unchanged".
 - **Not covered:** a real Drive and the OS keychain; run `syncd restore` and then `syncd sync` by hand against a test account for that.
 
+## Changes poller
+
+Ticket 38 (GH-38, plan `docs/plans/029-changes-poller.md`). `syncd changes [--all] [--reset]` reads the Drive changes feed. It only reports; ticket 39 decides what a change means and ticket 40 applies it.
+
+- **Position:** the changes page token is stored in the `meta` table (migration 7, `meta(key, value)`), key `changes_page_token`, through `Repo.GetMeta` / `SetMeta`. It is a bookmark in the feed, not a credential (the OAuth refresh token stays in the keychain). Losing the database loses it; the next run takes a new baseline.
+- **Baseline:** with no saved position the command calls `changes.getStartPageToken`, saves it and prints `watching Drive changes from now`. History is not backfilled; `sync` / `restore` catch a machine up.
+- **Reading:** `Uploader.Changes(token)` follows `nextPageToken` until `newStartPageToken`, under `withRetry`. Folders and `config.json` are skipped; several changes to one file collapse to the last, in the place it happened. A change with no `rel_path` tag uses the file name. `removed` entries carry only the file ID.
+- **Saving:** lines are printed, then the new token is saved. A failure leaves the old position, so the next run reads the same changes again (at-least-once).
+- **Our own uploads:** a change whose revision equals the row's `base_revision_id`, or a trash/removal of a file the database no longer tracks, is hidden unless `--all`. This is the signal ticket 40 will use against echo loops.
+- **Expired position:** Drive answers 410 (or 400) for a token that is too old. `Changes` returns `ErrPageTokenExpired`; the command prints `page token expired; changes before now are not reported`, saves a new baseline and exits 0.
+- **Lock:** it takes the same database lock as `run` and `sync`, because it writes the position. It cannot run beside `syncd run` until the poller moves into the daemon (ticket 40). There is no `--watch` loop for that reason.
+- **Not verified against real Drive:** the tests use a fake feed. Check what `drive.file` actually includes (our uploads, `config.json`, folders) before building ticket 40 on it.
+
 ## Control API
 
 A running `syncd run` can be steered from outside, which is what `syncd ctl` and, later, the tray app (separate process, ADR-001) use.

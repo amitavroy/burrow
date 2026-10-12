@@ -12,5 +12,7 @@
 // (addParents/removeParents), keeping its ID and revisions. ReadConfig and
 // WriteConfig keep the shared settings file (config.json) under MySync. Download saves a Drive file through a temporary file, verified by MD5 and
 // renamed into place. ListTree lists every file under MySync with its tag,
-// MD5, size and head revision.
+// MD5, size and head revision. StartPageToken and Changes read the Drive changes feed
+// (the files that changed since a saved position); an expired position gives
+// ErrPageTokenExpired.
 package drive

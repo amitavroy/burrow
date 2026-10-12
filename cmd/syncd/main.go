@@ -1129,6 +1129,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return configCmd(args[1:], stdout, stderr)
 	case "remote":
 		return remoteCmd(args[1:], stdout, stderr)
+	case "changes":
+		return changesCmd(args[1:], stdout, stderr)
 	case "restore":
 		return restoreCmd(args[1:], stdout, stderr)
 	case "ctl":
@@ -1139,4 +1141,109 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "syncd: unknown command %q\n", args[0])
 		return 2
 	}
+}
+
+// changesAPI is the part of the Drive client `syncd changes` uses.
+type changesAPI struct {
+	start func(context.Context) (string, error)
+	list  func(context.Context, string) ([]drive.Change, string, error)
+}
+
+// changesCmd prints what changed on Drive since the last run, from the Drive
+// changes feed. The first run only records where "now" is. It takes the
+// database lock because it saves the feed position there.
+func changesCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("changes", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	all := fs.Bool("all", false, "also show changes that match what the database already knows (syncd's own uploads)")
+	reset := fs.Bool("reset", false, "forget the saved position and start again from now")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: syncd changes [--all] [--reset]")
+		return 2
+	}
+	client, err := drive.LoadClient()
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	lock, ok := lockDatabase("changes", stderr)
+	if !ok {
+		return 1
+	}
+	defer lock.Unlock()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	repo, err := store.OpenRepo(dbPath())
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: changes failed: %v\n", err)
+		return 1
+	}
+	defer repo.Close()
+	u := drive.NewUploader(client, drive.KeyringStore{}, drive.FileStore{}, repo)
+	return runChanges(ctx, repo, changesAPI{u.StartPageToken, u.Changes}, *all, *reset, stdout, stderr)
+}
+
+func runChanges(ctx context.Context, repo *store.Repo, api changesAPI, all, reset bool, stdout, stderr io.Writer) int {
+	token, _, err := repo.GetMeta(ctx, store.MetaChangesToken)
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: changes failed: %v\n", err)
+		return 1
+	}
+	baseline := func(why string) int {
+		tok, err := api.start(ctx)
+		if err == nil {
+			err = repo.SetMeta(ctx, store.MetaChangesToken, tok)
+		}
+		if err != nil {
+			return reportDriveErr(stderr, "changes", err)
+		}
+		fmt.Fprintln(stdout, why)
+		return 0
+	}
+	if token == "" || reset {
+		return baseline("watching Drive changes from now")
+	}
+	changes, next, err := api.list(ctx, token)
+	if errors.Is(err, drive.ErrPageTokenExpired) {
+		return baseline("page token expired; changes before now are not reported (run syncd sync or restore to catch up)")
+	}
+	if err != nil {
+		return reportDriveErr(stderr, "changes", err) // the saved position stays, the next run reads again
+	}
+	for _, c := range changes {
+		if !all && known(ctx, repo, c) {
+			continue
+		}
+		fmt.Fprintln(stdout, formatChange(c))
+	}
+	if err := repo.SetMeta(ctx, store.MetaChangesToken, next); err != nil {
+		fmt.Fprintf(stderr, "syncd: changes failed: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// known reports whether the database already agrees with c: an edit whose
+// revision is the one it recorded (syncd's own upload coming back), or a
+// delete of a file it no longer tracks.
+func known(ctx context.Context, repo *store.Repo, c drive.Change) bool {
+	f, err := repo.GetByDriveID(ctx, c.FileID)
+	if err != nil {
+		return errors.Is(err, store.ErrNotFound) && (c.Removed || c.Trashed)
+	}
+	return !c.Removed && !c.Trashed && c.RevisionID != "" && c.RevisionID == f.BaseRevisionID
+}
+
+// formatChange is one `changes` line.
+func formatChange(c drive.Change) string {
+	switch {
+	case c.Removed:
+		return "removed " + c.FileID
+	case c.Trashed:
+		return "trashed " + c.RelPath
+	}
+	return "modified " + c.RelPath
 }

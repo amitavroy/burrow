@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"runtime"
 	"strings"
@@ -296,7 +297,7 @@ func TestDB(t *testing.T) {
 			if code := run([]string{"db", "status"}, &stdout, &stderr); code != 0 {
 				t.Fatalf("run #%d: code = %d, stderr = %q", i+1, code, stderr.String())
 			}
-			for _, want := range []string{"Path:    " + path, "Version: 6", "files", "folders", "jobs", "sync_errors", "goose_db_version"} {
+			for _, want := range []string{"Path:    " + path, "Version: 7", "files", "folders", "jobs", "meta", "sync_errors", "goose_db_version"} {
 				if !strings.Contains(stdout.String(), want) {
 					t.Errorf("run #%d: stdout %q missing %q", i+1, stdout.String(), want)
 				}
@@ -974,5 +975,96 @@ func TestFormatStatusLastSync(t *testing.T) {
 	got := formatStatus(control.Status{State: "running", LastSync: "2026-10-11T12:00:00Z"}, now)
 	if !strings.Contains(got, "last sync: 2026-10-11T12:00:00Z (30s ago)") {
 		t.Errorf("status = %q", got)
+	}
+}
+
+func TestRunChanges(t *testing.T) {
+	ctx := context.Background()
+	repo, err := store.OpenRepo(filepath.Join(t.TempDir(), "burrow.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	// a.txt was uploaded by syncd at rev-1; b.txt is tracked at rev-1 too.
+	for _, f := range []store.File{
+		{RelPath: "a.txt", DriveFileID: "f-a", BaseRevisionID: "rev-1"},
+		{RelPath: "b.txt", DriveFileID: "f-b", BaseRevisionID: "rev-1"},
+	} {
+		if err := repo.Upsert(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var asked []string
+	feed := []drive.Change{
+		{FileID: "f-a", RelPath: "a.txt", RevisionID: "rev-1"},          // our own upload
+		{FileID: "f-b", RelPath: "b.txt", RevisionID: "rev-2"},          // edited in the web UI
+		{FileID: "f-b2", RelPath: "gone.txt", Trashed: true},            // untracked file trashed: nothing to do
+		{FileID: "f-a", RelPath: "a.txt", Trashed: true},                // tracked file trashed in the web UI
+		{FileID: "f-x", Removed: true},                                  // untracked, removed
+		{FileID: "f-new", RelPath: "docs/new.txt", RevisionID: "rev-9"}, // unknown to the database
+	}
+	api := changesAPI{
+		start: func(context.Context) (string, error) { return "t0", nil },
+		list: func(_ context.Context, tok string) ([]drive.Change, string, error) {
+			asked = append(asked, tok)
+			return feed, "t" + string(rune('0'+len(asked))), nil
+		},
+	}
+	runIt := func(all, reset bool) (int, string, string) {
+		var out, errb bytes.Buffer
+		code := runChanges(ctx, repo, api, all, reset, &out, &errb)
+		return code, out.String(), errb.String()
+	}
+
+	// 1. no saved position: baseline, nothing listed
+	if code, out, _ := runIt(false, false); code != 0 || out != "watching Drive changes from now\n" || len(asked) != 0 {
+		t.Fatalf("baseline: %d %q asked %v", code, out, asked)
+	}
+	// 2. later run lists web edits only, and saves the new position
+	want := "modified b.txt\ntrashed a.txt\nmodified docs/new.txt\n"
+	if code, out, _ := runIt(false, false); code != 0 || out != want || !reflect.DeepEqual(asked, []string{"t0"}) {
+		t.Fatalf("changes: %d %q asked %v", code, out, asked)
+	}
+	// 3. --all also shows our own echoes
+	if code, out, _ := runIt(true, false); code != 0 || !strings.Contains(out, "modified a.txt\n") || !strings.Contains(out, "removed f-x\n") || !reflect.DeepEqual(asked, []string{"t0", "t1"}) {
+		t.Fatalf("--all: %d %q asked %v", code, out, asked)
+	}
+	// 4. --reset starts again from now without listing
+	if code, out, _ := runIt(false, true); code != 0 || out != "watching Drive changes from now\n" || len(asked) != 2 {
+		t.Fatalf("--reset: %d %q asked %v", code, out, asked)
+	}
+}
+
+func TestRunChangesTokenHandling(t *testing.T) {
+	ctx := context.Background()
+	repo, err := store.OpenRepo(filepath.Join(t.TempDir(), "burrow.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repo.Close()
+	_ = repo.SetMeta(ctx, store.MetaChangesToken, "old")
+	saved := func() string { v, _, _ := repo.GetMeta(ctx, store.MetaChangesToken); return v }
+
+	// expired: say so, take a new baseline, exit 0
+	api := changesAPI{
+		start: func(context.Context) (string, error) { return "fresh", nil },
+		list: func(context.Context, string) ([]drive.Change, string, error) {
+			return nil, "", fmt.Errorf("%w: gone", drive.ErrPageTokenExpired)
+		},
+	}
+	var out, errb bytes.Buffer
+	if code := runChanges(ctx, repo, api, false, false, &out, &errb); code != 0 || !strings.Contains(out.String(), "page token expired") || saved() != "fresh" {
+		t.Fatalf("expired: code %d out %q err %q saved %q", code, out.String(), errb.String(), saved())
+	}
+
+	// a failure keeps the saved position, so the next run reads again
+	api.list = func(context.Context, string) ([]drive.Change, string, error) {
+		return nil, "", errors.New("network down")
+	}
+	out.Reset()
+	errb.Reset()
+	if code := runChanges(ctx, repo, api, false, false, &out, &errb); code != 1 || !strings.Contains(errb.String(), "network down") || saved() != "fresh" {
+		t.Fatalf("failure: code %d err %q saved %q", code, errb.String(), saved())
 	}
 }

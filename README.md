@@ -119,6 +119,10 @@ Every uploaded file gets a row in the state database (see below). A file whose s
 
 `syncd remote get <rel_path> [<local path>]` downloads one file. It is written to a temporary `.tmp` file next to the target, checked against Drive's MD5 and then renamed into place, so you never see a partial file; on a mismatch nothing is written. An existing target is replaced.
 
+## Drive changes
+
+`syncd changes` prints what changed on Drive since you last asked, from the Drive changes feed: `modified <rel_path>`, `trashed <rel_path>` or `removed <file id>`, one per line. The first run only records "now" (`watching Drive changes from now`); edit a file in the Drive web UI and run it again to see it. The position is saved in the state database after the lines are printed, so a failed run repeats them. `syncd`'s own uploads are hidden; `--all` shows them, `--reset` starts again from now. If Drive no longer accepts the saved position it says so and starts again from now (run `syncd sync` or `restore` to catch up). It takes the database lock, so stop `syncd run` first. It only reports; nothing is downloaded yet.
+
 ## Restoring on a new machine
 
 `syncd restore [--root DIR]` fills the sync root (default `~/MySync`) from Drive and records every file in the state database. A file that is missing is downloaded (verified, then renamed into place); one that is already there with the same content is only recorded; one with different content is kept as `name (conflicted copy, <host>, <date>).ext` and Drive's version is downloaded to the original path, so both survive. Run it again if some files failed, then `syncd run` to keep syncing. Use a machine as restore-only, or give it its own root, until two-way sync exists.
