@@ -66,7 +66,7 @@ Date: 2026-10-03. Ticket: GH-2.
 - Why: Google treats a desktop client secret as non-confidential, but keeping it out of source is the safer default and lets the client be swapped without a code change.
 - `drive.LoadClient()` reads the variables. `syncd` loads `.env` at startup with `godotenv`, and real environment variables win.
 - The `drive.file` scope is a Go const, not configuration.
-- Consequence: a release binary has no `.env` beside it. Ticket 37 must inject the values with `-ldflags -X` at build time, with `.env` as the dev-time override.
+- Consequence: a release binary has no `.env` beside it. Release builds inject the values with `-ldflags -X` into `drive.ClientID` and `drive.ClientSecret` (ticket 37); `.env` and real environment variables remain the override.
 
 ### ADR-004: goose for migrations, embedded in the binary
 
@@ -473,7 +473,7 @@ syncd <command>
   unknown  -> error on stderr, exit 2
 ```
 
-Config: the OAuth client credentials come from `BURROW_GOOGLE_CLIENT_ID` and `BURROW_GOOGLE_CLIENT_SECRET`. Copy `.env.example` to `.env` (git-ignored); `syncd` loads it at startup with `godotenv`, and real environment variables win. `drive.LoadClient()` reads them. See the README for the Google Cloud setup. Release builds (ticket 37) will inject the values with `-ldflags` instead.
+Config: the OAuth client credentials come from `BURROW_GOOGLE_CLIENT_ID` and `BURROW_GOOGLE_CLIENT_SECRET`. Copy `.env.example` to `.env` (git-ignored); `syncd` loads it at startup with `godotenv`, and real environment variables win. `drive.LoadClient()` reads them. See the README for the Google Cloud setup. Release builds bake the values in with `-ldflags` (see Release builds); the environment still wins.
 
 Layout: `cmd/syncd` (CLI, plain `os.Args` switch, no framework), `internal/sync`, `internal/store` and `internal/drive` (package stubs for now). `run(args, stdout, stderr) int` holds the logic so it can be tested without spawning a process.
 
@@ -647,7 +647,16 @@ syncd service status                 # installed? enabled? active?
 - **How it works:** every 2 s it asks `GET /status` (`control.Request`); clicking the pause or resume item sends `POST /pause` or `POST /resume` and shows the reply at once. The tooltip repeats the state in words (`Burrow: paused, 5 queued`), so the colors are not the only signal. **Quit tray** closes the icon only; `syncd` keeps running.
 - **Code:** `view.go` turns one poll into a `view` (icon kind, tooltip, status line, toggle label and action) and holds `poll` and `toggle`; `icon.go` draws the three icons as PNGs in code (a smoothed circle, no image files) and wraps them in an ICO on Windows; `main.go` is the only file that touches `fyne.io/systray`. Everything but `main.go` is tested, including `poll` and `toggle` against a real `sync.ServeControl` socket, so the pause round trip is checked without a display.
 - **Socket:** `store.SocketPath()`, the same file `syncd run` serves and `syncd ctl` reads.
-- **Platforms:** Linux uses the StatusNotifier D-Bus interface (pure Go; some desktops, GNOME among them, need a tray extension to show the icon). macOS needs cgo, so the macOS `make vet` skips `cmd/syncui`. On Windows build with `-ldflags "-H=windowsgui"` so no console window opens. `syncui` has to run in your desktop session, not as a system service.
+- **Platforms:** Linux uses the StatusNotifier D-Bus interface (pure Go; some desktops, GNOME among them, need a tray extension to show the icon). macOS needs cgo, so the macOS `make vet` skips `cmd/syncui`. On Windows build with `-ldflags "-H=windowsgui"` so no console window opens (the release build does this). `syncui` has to run in your desktop session, not as a system service.
 - **Not verified on a display:** the tests cover the logic and the icon data; on this build the process starts and runs without error, but nobody has looked at the icon on Linux, macOS or Windows yet. Start `syncd run` (or the service), run `bin/syncui`, and check the icon, the tooltip and the pause item.
 - **Not done:** no autostart for the tray (ticket 36 or the service install can add it), no errors list, logs folder, debug toggle or root change (ticket 36), and no notifications.
 
+## Release builds
+
+Ticket 37 (GH-37, plan `docs/plans/028-release-builds.md`). GoReleaser, run locally (no CI, ADR-002), config in `.goreleaser.yaml`.
+
+- **What ships:** one archive per OS and CPU (linux, darwin, windows × amd64, arm64) named `burrow_<version>_<os>_<arch>` (`.zip` on Windows), plus `checksums.txt`. Linux and Windows archives hold `syncd` and `syncui`; macOS holds `syncd` only, because `syncui` needs cgo and cannot be built from Linux (`make build-ui` on a Mac). Windows `syncui` is linked with `-H=windowsgui`. All builds use `CGO_ENABLED=0`.
+- **Credentials:** `-ldflags -X` sets `drive.ClientID` and `drive.ClientSecret` from `BURROW_GOOGLE_CLIENT_ID` and `BURROW_GOOGLE_CLIENT_SECRET` (the Makefile loads `.env`). `drive.LoadClient` takes the environment variable first, then the baked-in value. Google treats a desktop client secret as non-confidential, and the client ID must never change anyway.
+- **Version:** `main.Version` comes from the git tag.
+- **Commands:** `make release-check` runs `goreleaser check` and a snapshot build into `dist/` (git-ignored). `make release` publishes the GitHub release for the tag at HEAD and refuses on a dirty tree or an untagged HEAD. The changelog skips `docs:`, `test:` and `chore:` commits.
+- **Not done:** code signing and notarization (first run warns on macOS and Windows), package managers, a macOS tray binary, a CI release workflow.

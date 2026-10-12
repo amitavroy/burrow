@@ -45,3 +45,19 @@ func TestScopeDriveFile(t *testing.T) {
 		t.Fatalf("ScopeDriveFile = %q, want %q", ScopeDriveFile, want)
 	}
 }
+
+func TestLoadClientBakedIn(t *testing.T) {
+	oldID, oldSecret := ClientID, ClientSecret
+	t.Cleanup(func() { ClientID, ClientSecret = oldID, oldSecret })
+	ClientID, ClientSecret = "baked-id", "baked-secret"
+
+	t.Setenv("BURROW_GOOGLE_CLIENT_ID", "")
+	t.Setenv("BURROW_GOOGLE_CLIENT_SECRET", "")
+	if got, err := LoadClient(); err != nil || got != (Client{ID: "baked-id", Secret: "baked-secret"}) {
+		t.Fatalf("baked in only: %+v, %v", got, err)
+	}
+	t.Setenv("BURROW_GOOGLE_CLIENT_ID", "env-id")
+	if got, err := LoadClient(); err != nil || got != (Client{ID: "env-id", Secret: "baked-secret"}) {
+		t.Fatalf("env over baked in: %+v, %v", got, err)
+	}
+}

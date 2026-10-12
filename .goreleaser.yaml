@@ -1,0 +1,47 @@
+version: 2
+
+builds:
+  - id: syncd
+    main: ./cmd/syncd
+    binary: syncd
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X main.Version={{.Version}}
+      - -X github.com/amitavroy/burrow/internal/drive.ClientID={{.Env.BURROW_GOOGLE_CLIENT_ID}}
+      - -X github.com/amitavroy/burrow/internal/drive.ClientSecret={{.Env.BURROW_GOOGLE_CLIENT_SECRET}}
+
+  - id: syncui
+    main: ./cmd/syncui
+    binary: syncui
+    env: [CGO_ENABLED=0]
+    goos: [linux, windows] # macOS needs cgo: build it on a Mac with `make build-ui`
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w{{ if eq .Os "windows" }} -H=windowsgui{{ end }}
+
+archives:
+  - formats: [tar.gz]
+    allow_different_binary_count: true # macOS ships syncd only
+    name_template: "burrow_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: amitavroy
+    name: burrow
+
+changelog:
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"

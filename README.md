@@ -18,6 +18,14 @@ Burrow signs in as your own Google account with an OAuth desktop client. You cre
 
 An "unverified app" warning at sign-in is normal for `drive.file`.
 
+## Install from a release
+
+Download the archive for your OS and CPU from the GitHub releases page (`burrow_<version>_<os>_<arch>`; `.zip` on Windows, `.tar.gz` elsewhere), check it against `checksums.txt` (`sha256sum -c --ignore-missing checksums.txt`), and unpack it. The Linux and Windows archives hold `syncd` and the tray app `syncui`; the macOS archives hold `syncd` only (the tray needs cgo, so build it on a Mac with `make build-ui`).
+
+A release binary has the OAuth client built in, so it needs no `.env`: run `syncd login`, then `syncd run` (or `syncd service install`). Binaries are not code-signed, so macOS Gatekeeper (`xattr -d com.apple.quarantine syncd`) and Windows SmartScreen warn on first run.
+
+To cut a release (maintainers): `git tag vX.Y.Z`, then `make release` (needs `goreleaser` and a signed-in `gh`; it loads the client from `.env` and refuses on a dirty tree or an untagged HEAD). `make release-check` builds the same archives locally into `dist/` without publishing.
+
 ## Local configuration
 
 Copy the example file and fill in the two values from step 6:
@@ -173,4 +181,5 @@ bin/syncd sync --root tree                  # info lines go to the log file inst
 make build   # builds bin/syncd
 make vet     # go vet ./... (also for GOOS=windows and darwin)
 make test    # go test -race ./...
+make release-check  # snapshot release archives in dist/ (needs goreleaser and .env)
 ```
