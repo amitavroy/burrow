@@ -2,6 +2,25 @@
 
 A Go daemon that watches one local folder and mirrors it to Google Drive. See `requirements.md` for scope and architecture.
 
+## Quick start
+
+1. **Get `syncd`.**
+   - On a `.deb` system: `sudo dpkg -i burrow_*.deb` (see "Install from a release"), then go to step 2.
+   - From a release: unpack the archive for your system (see "Install from a release" below) and move `syncd` to a place it will stay, such as `~/.local/bin`. The service remembers the path it was installed from, so do not move or delete the binary afterwards.
+   - From source: do the "Google Cloud setup" and "Local configuration" below, then `make build`. The binary is `bin/syncd`; keep it where it is.
+2. **Sign in once:** `syncd login`. A browser opens; `syncd whoami` then prints your email.
+3. **Install the background service**, which starts `syncd run` whenever you log in:
+   ```
+   syncd service install            # syncs ~/MySync
+   syncd service install --root ~/Sync   # or another folder
+   ```
+   From source, run this from the folder that holds your `.env`. The folder is created if it does not exist.
+4. **Check it:** `syncd service status` and `syncd ctl status` (state, queue, last sync). Put a file in the sync folder and it appears in Drive within about a minute. Failures show up in `syncd errors`.
+5. **Linux only, to start before you log in:** `loginctl enable-linger $USER`. Without it the service starts when you log in, not when the machine boots.
+6. **Tray icon:** `syncd service install` also starts the tray at login when a `syncui` binary sits next to `syncd` (the Linux and Windows release archives hold both; from source run `make build-ui` first, then `syncd service install` again). On Linux it writes `~/.config/autostart/burrow-syncui.desktop`; on macOS a second launch agent; on Windows a second Run-key entry. Start it right away with `syncui &`. `syncd` syncs with or without it, and quitting the tray does not stop syncing.
+
+If nothing syncs after a restart: `syncd service status` (Linux: `systemctl --user status syncd.service`, logs with `journalctl --user -u syncd.service -b`). A "not signed in" or "session expired" message means run `syncd login` again.
+
 ## Google Cloud setup
 
 Burrow signs in as your own Google account with an OAuth desktop client. You create that client once, in your own Google Cloud project.
@@ -21,6 +40,8 @@ An "unverified app" warning at sign-in is normal for `drive.file`.
 ## Install from a release
 
 Download the archive for your OS and CPU from the GitHub releases page (`burrow_<version>_<os>_<arch>`; `.zip` on Windows, `.tar.gz` elsewhere), check it against `checksums.txt` (`sha256sum -c --ignore-missing checksums.txt`), and unpack it. The Linux and Windows archives hold `syncd` and the tray app `syncui`; the macOS archives hold `syncd` only (the tray needs cgo, so build it on a Mac with `make build-ui`).
+
+**Debian, Ubuntu and other `.deb` systems:** download `burrow_<version>_linux_<arch>.deb` and run `sudo dpkg -i burrow_*.deb` (or `sudo apt install ./burrow_*.deb`). It installs `syncd` and `syncui` into `/usr/bin`; then follow the Quick start from step 2 (`syncd login`, `syncd service install`). Remove it with `sudo apt remove burrow`; run `syncd service uninstall` first to drop the login registrations, which live in your home folder.
 
 A release binary has the OAuth client built in, so it needs no `.env`: run `syncd login`, then `syncd run` (or `syncd service install`). Binaries are not code-signed, so macOS Gatekeeper (`xattr -d com.apple.quarantine syncd`) and Windows SmartScreen warn on first run.
 
@@ -143,7 +164,7 @@ While `syncd run` is going, `syncd ctl status` (from another terminal) prints it
 
 ## Starting at login
 
-`syncd service install [--root DIR]` (run it from the folder with your `.env`) registers `syncd run` with the OS and starts it: a systemd user unit on Linux, a launch agent on macOS, a Run-key entry on Windows. It starts when you log in and is restarted after a failure. `syncd service status` shows whether it is installed and active, `syncd service uninstall` removes it. On Linux, `loginctl enable-linger $USER` starts it at boot even before you log in. Use `syncd ctl status` to see what it is doing.
+`syncd service install [--root DIR]` (run it from the folder with your `.env`) registers `syncd run` with the OS and starts it: a systemd user unit on Linux, a launch agent on macOS, a Run-key entry on Windows. It starts when you log in and is restarted after a failure. `syncd service status` shows whether it is installed and active, `syncd service uninstall` removes it. On Linux, `loginctl enable-linger $USER` starts it at boot even before you log in. If a `syncui` binary sits next to `syncd`, install also registers the tray icon to start with your desktop session (`syncd service uninstall` removes both). macOS release archives have no `syncui`. Use `syncd ctl status` to see what it is doing.
 
 ## Watching (preview)
 

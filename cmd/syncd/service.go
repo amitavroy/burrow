@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/amitavroy/burrow/internal/drive"
 )
 
 // The names under which the daemon is registered with each OS.
@@ -19,7 +21,12 @@ const (
 	systemdUnitName = "syncd.service"
 	launchdLabel    = "dev.burrow.syncd"
 	windowsRunValue = "syncd"
-	windowsRunKey   = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+
+	// The tray app, started in the desktop session at login (never a system service).
+	trayLaunchdLabel = "dev.burrow.syncui"
+	trayDesktopFile  = "burrow-syncui.desktop"
+	trayWindowsValue = "syncui"
+	windowsRunKey    = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
 )
 
 // Replaced by tests, so they never touch the real service manager.
@@ -111,6 +118,132 @@ func windowsCommand(s serviceSpec) string {
 	return fmt.Sprintf(`cmd /c cd /d "%s" && "%s" run --root "%s"`, s.WorkDir, s.Exe, s.Root)
 }
 
+// trayExe is the syncui binary that sits next to this one, or "" when the
+// release or build has none (macOS releases ship syncd only).
+func trayExe(exe string) string {
+	name := "syncui"
+	if goos == "windows" {
+		name += ".exe"
+	}
+	p := filepath.Join(filepath.Dir(exe), name)
+	if st, err := os.Stat(p); err != nil || st.IsDir() {
+		return ""
+	}
+	return p
+}
+
+// trayDesktopEntry is the XDG autostart entry that starts the tray with the
+// desktop session on Linux.
+func trayDesktopEntry(exe string) string {
+	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", "$", `\$`)
+	return fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Burrow tray\nComment=Sync status for Burrow\nExec=\"%s\"\nTerminal=false\n", r.Replace(exe))
+}
+
+// trayPlist is the launch agent that starts the tray at login on macOS. It is
+// not restarted: quitting the tray from its menu should stay quit.
+func trayPlist(exe string) string {
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>%s</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>%s</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>LimitLoadToSessionType</key><string>Aqua</string>
+</dict>
+</plist>
+`, trayLaunchdLabel, xmlEscape(exe))
+}
+
+func trayDesktopPath() (string, error) {
+	dir, err := userConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "autostart", trayDesktopFile), nil
+}
+
+func trayPlistPath() (string, error) {
+	home, err := homeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", trayLaunchdLabel+".plist"), nil
+}
+
+// installTray registers the tray app to start at login, when there is one next
+// to syncd. It is best effort: a problem here is reported but never fails the
+// service install.
+func installTray(exe string, stdout, stderr io.Writer) {
+	tray := trayExe(exe)
+	if tray == "" {
+		fmt.Fprintln(stdout, "no syncui next to syncd, so no tray icon at login (build it with `make build-ui`, then run `syncd service install` again)")
+		return
+	}
+	var err error
+	switch goos {
+	case "linux":
+		var path string
+		if path, err = trayDesktopPath(); err == nil {
+			if err = os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+				err = os.WriteFile(path, []byte(trayDesktopEntry(tray)), 0o644)
+			}
+		}
+		if err == nil {
+			fmt.Fprintf(stdout, "installed %s; the tray icon starts with your next login (start it now: %s &)\n", path, tray)
+		}
+	case "darwin":
+		var path string
+		if path, err = trayPlistPath(); err == nil {
+			if err = os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
+				_, _ = runCommand("launchctl", "bootout", launchdDomain()+"/"+trayLaunchdLabel)
+				if err = os.WriteFile(path, []byte(trayPlist(tray)), 0o644); err == nil {
+					err = run1("launchctl", "bootstrap", launchdDomain(), path)
+				}
+			}
+		}
+		if err == nil {
+			fmt.Fprintf(stdout, "installed %s and started the tray icon; it starts when you log in\n", path)
+		}
+	case "windows":
+		if err = run1("reg", "add", windowsRunKey, "/v", trayWindowsValue, "/t", "REG_SZ", "/d", `"`+tray+`"`, "/f"); err == nil {
+			fmt.Fprintf(stdout, "installed %s\\%s; the tray icon starts with your next login\n", windowsRunKey, trayWindowsValue)
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: tray icon not installed: %v\n", err)
+	}
+}
+
+// uninstallTray removes the tray registration; already gone is fine.
+func uninstallTray() error {
+	switch goos {
+	case "linux":
+		path, err := trayDesktopPath()
+		if err == nil {
+			if err = os.Remove(path); errors.Is(err, os.ErrNotExist) {
+				err = nil
+			}
+		}
+		return err
+	case "darwin":
+		path, err := trayPlistPath()
+		if err == nil {
+			_, _ = runCommand("launchctl", "bootout", launchdDomain()+"/"+trayLaunchdLabel)
+			if err = os.Remove(path); errors.Is(err, os.ErrNotExist) {
+				err = nil
+			}
+		}
+		return err
+	case "windows":
+		_, _ = runCommand("reg", "delete", windowsRunKey, "/v", trayWindowsValue, "/f")
+	}
+	return nil
+}
+
 func unitPath() (string, error) {
 	dir, err := userConfigDir()
 	if err != nil {
@@ -194,7 +327,8 @@ func serviceInstall(rootDir string, stdout, stderr io.Writer) int {
 	}
 	// The daemon reads its OAuth client from .env in its working directory, so
 	// the service must start where that file is: where you ran this command.
-	if _, err := os.Stat(filepath.Join(work, ".env")); err != nil {
+	// A release build has the client baked in and needs no .env.
+	if _, err := os.Stat(filepath.Join(work, ".env")); err != nil && (drive.ClientID == "" || drive.ClientSecret == "") {
 		fmt.Fprintln(stderr, "syncd: no .env in the current folder; run `syncd service install` from the folder that holds it (the OAuth client ID and secret)")
 		return 1
 	}
@@ -229,6 +363,7 @@ func serviceInstall(rootDir string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "syncd: service install failed: %v\n", err)
 		return 1
 	}
+	installTray(exe, stdout, stderr)
 	return 0
 }
 
@@ -321,6 +456,9 @@ func serviceUninstall(stdout, stderr io.Writer) int {
 		_, _ = runCommand("reg", "delete", windowsRunKey, "/v", windowsRunValue, "/f")
 	default:
 		return unsupported(stderr)
+	}
+	if err == nil {
+		err = uninstallTray()
 	}
 	if err != nil {
 		fmt.Fprintf(stderr, "syncd: service uninstall failed: %v\n", err)

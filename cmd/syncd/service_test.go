@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/amitavroy/burrow/internal/drive"
 )
 
 var spec = serviceSpec{Exe: "/opt/my apps/syncd", Root: "/home/me/My Sync", WorkDir: "/home/me/burrow"}
@@ -209,7 +211,7 @@ func TestServiceInstallOnMacAndWindows(t *testing.T) {
 		t.Errorf("commands = %v", f.cmds)
 	}
 	f.cmds = nil
-	if code := serviceCmd([]string{"uninstall"}, &out, &errb); code != 0 || len(f.cmds) != 1 {
+	if code := serviceCmd([]string{"uninstall"}, &out, &errb); code != 0 || len(f.cmds) != 2 { // the daemon and the tray agent
 		t.Errorf("darwin uninstall: code %d, commands %v", code, f.cmds)
 	}
 	if _, err := os.Stat(plist); err == nil {
@@ -234,6 +236,16 @@ func TestServiceInstallRefusals(t *testing.T) {
 		t.Errorf("no .env: code %d, stderr %q, commands %v", code, errb.String(), f.cmds)
 	}
 
+	// A release build has the client baked in, so no .env is needed.
+	oldID, oldSecret := drive.ClientID, drive.ClientSecret
+	drive.ClientID, drive.ClientSecret = "id", "secret"
+	errb.Reset()
+	if code := serviceCmd([]string{"install"}, &out, &errb); strings.Contains(errb.String(), "no .env") {
+		t.Errorf("baked-in client still needs .env: code %d, stderr %q", code, errb.String())
+	}
+	drive.ClientID, drive.ClientSecret = oldID, oldSecret
+	f.cmds = nil
+
 	f.withEnv(t)
 	f.failOn = "enable --now"
 	errb.Reset()
@@ -252,5 +264,90 @@ func TestServiceInstallRefusals(t *testing.T) {
 		if code := serviceCmd(args, &out, &errb); code != 2 || !strings.Contains(errb.String(), "usage: syncd service") {
 			t.Errorf("%v: code %d, stderr %q", args, code, errb.String())
 		}
+	}
+}
+
+// withTray puts a syncui next to the fake syncd, as in a release archive.
+func (f *fakeOS) withTray(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	name := "syncui"
+	if goos == "windows" {
+		name += ".exe"
+	}
+	tray := filepath.Join(dir, name)
+	if err := os.WriteFile(tray, []byte("x"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	executable = func() (string, error) { return filepath.Join(dir, "syncd"), nil }
+	return tray
+}
+
+func TestTrayAutostartOnLinux(t *testing.T) {
+	f := useFakeOS(t, "linux")
+	f.withEnv(t)
+	tray := f.withTray(t)
+	var out, errb bytes.Buffer
+
+	if code := serviceCmd([]string{"install", "--root", t.TempDir()}, &out, &errb); code != 0 {
+		t.Fatalf("install: code %d, stderr %q", code, errb.String())
+	}
+	entry := filepath.Join(f.config, "autostart", "burrow-syncui.desktop")
+	b, err := os.ReadFile(entry)
+	if err != nil || !strings.Contains(string(b), `Exec="`+tray+`"`) || !strings.Contains(string(b), "Type=Application") {
+		t.Fatalf("autostart entry = %q, %v", b, err)
+	}
+
+	if code := serviceCmd([]string{"uninstall"}, &out, &errb); code != 0 {
+		t.Fatalf("uninstall: code %d, stderr %q", code, errb.String())
+	}
+	if _, err := os.Stat(entry); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("autostart entry still there: %v", err)
+	}
+}
+
+func TestTrayAutostartOnMacAndWindows(t *testing.T) {
+	f := useFakeOS(t, "darwin")
+	f.withEnv(t)
+	tray := f.withTray(t)
+	var out, errb bytes.Buffer
+	if code := serviceCmd([]string{"install", "--root", t.TempDir()}, &out, &errb); code != 0 {
+		t.Fatalf("mac install: code %d, stderr %q", code, errb.String())
+	}
+	plist := filepath.Join(f.config, "Library", "LaunchAgents", "dev.burrow.syncui.plist")
+	b, err := os.ReadFile(plist)
+	if err != nil || !strings.Contains(string(b), "<string>"+tray+"</string>") || !strings.Contains(string(b), "<key>RunAtLoad</key><true/>") {
+		t.Fatalf("tray plist = %q, %v", b, err)
+	}
+	if !strings.Contains(strings.Join(f.cmds, "\n"), "launchctl bootstrap") {
+		t.Errorf("commands = %v", f.cmds)
+	}
+
+	f = useFakeOS(t, "windows")
+	f.withEnv(t)
+	tray = f.withTray(t)
+	out.Reset()
+	if code := serviceCmd([]string{"install", "--root", t.TempDir()}, &out, &errb); code != 0 {
+		t.Fatalf("windows install: code %d, stderr %q", code, errb.String())
+	}
+	if want := `reg add ` + windowsRunKey + ` /v syncui /t REG_SZ /d "` + tray + `" /f`; !strings.Contains(strings.Join(f.cmds, "\n"), want) {
+		t.Errorf("commands = %v, want %q", f.cmds, want)
+	}
+	f.cmds = nil
+	serviceCmd([]string{"uninstall"}, &out, &errb)
+	if !strings.Contains(strings.Join(f.cmds, "\n"), "reg delete "+windowsRunKey+" /v syncui") {
+		t.Errorf("uninstall commands = %v", f.cmds)
+	}
+}
+
+func TestNoTrayBinaryIsAHintNotAnError(t *testing.T) {
+	f := useFakeOS(t, "linux") // the fake syncd has no syncui beside it
+	f.withEnv(t)
+	var out, errb bytes.Buffer
+	if code := serviceCmd([]string{"install", "--root", t.TempDir()}, &out, &errb); code != 0 || !strings.Contains(out.String(), "no syncui next to syncd") {
+		t.Errorf("code %d, stdout %q, stderr %q", code, out.String(), errb.String())
+	}
+	if _, err := os.Stat(filepath.Join(f.config, "autostart")); err == nil {
+		t.Error("autostart dir created without a tray binary")
 	}
 }

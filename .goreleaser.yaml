@@ -45,3 +45,14 @@ changelog:
       - "^docs:"
       - "^test:"
       - "^chore:"
+
+nfpms:
+  - id: burrow
+    package_name: burrow
+    ids: [syncd, syncui]
+    formats: [deb]
+    maintainer: Amitav Roy <reachme@amitavroy.com>
+    homepage: https://github.com/amitavroy/burrow
+    description: Mirror a local folder to Google Drive (daemon and tray icon).
+    bindir: /usr/bin
+    file_name_template: "burrow_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
