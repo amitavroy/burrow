@@ -107,8 +107,16 @@ func login(stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "syncd: %v\n", err)
 		return 1
 	}
+	cacheEmail(stderr, email)
 	fmt.Fprintf(stdout, "Signed in as %s\n", email)
 	return 0
+}
+
+// cacheEmail remembers the account for the tray. Failing only costs the tray a label.
+func cacheEmail(stderr io.Writer, email string) {
+	if err := store.SaveEmail(email); err != nil {
+		fmt.Fprintf(stderr, "syncd: could not cache the email: %v\n", err)
+	}
 }
 
 // whoami signs in from the stored refresh token, without a browser, and
@@ -126,6 +134,7 @@ func whoami(stdout, stderr io.Writer) int {
 	if err != nil {
 		return reportDriveErr(stderr, "whoami", err)
 	}
+	cacheEmail(stderr, email)
 	fmt.Fprintf(stdout, "Signed in as %s\n", email)
 	return 0
 }
@@ -134,6 +143,10 @@ func whoami(stdout, stderr io.Writer) int {
 // revoked at Google. Running it while signed out is fine.
 func logout(stdout, stderr io.Writer) int {
 	if err := (drive.KeyringStore{}).Delete(); err != nil {
+		fmt.Fprintf(stderr, "syncd: %v\n", err)
+		return 1
+	}
+	if err := store.ClearEmail(); err != nil {
 		fmt.Fprintf(stderr, "syncd: %v\n", err)
 		return 1
 	}

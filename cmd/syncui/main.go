@@ -31,6 +31,11 @@ func onReady() {
 	systray.SetTitle("Burrow")
 	mStatus := systray.AddMenuItem("Starting…", "")
 	mStatus.Disable()
+	mAccount := systray.AddMenuItem("", "")
+	mAccount.Disable()
+	mSignIn := systray.AddMenuItem("Sign in…", "Opens your browser to sign in to Google")
+	mSignOut := systray.AddMenuItem("Sign out", "Forget this Google account on this computer")
+	mStart := systray.AddMenuItem("Start syncing", "Install and start the sync service")
 	mToggle := systray.AddMenuItem("Pause uploads", "Stop starting new uploads; the queue keeps filling")
 	systray.AddSeparator()
 	mErrors := systray.AddMenuItem("No errors", "Files that failed to sync")
@@ -46,8 +51,25 @@ func onReady() {
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit tray", "Close this icon; syncd keeps running")
 
-	shown := ""
+	shown, note := "", "" // note: why the last sign-in or start failed
 	apply := func(v view) {
+		email := store.LoadEmail()
+		mAccount.SetTitle(accountLine(email))
+		if email == "" {
+			mSignIn.Show()
+			mSignOut.Hide()
+		} else {
+			mSignIn.Hide()
+			mSignOut.Show()
+		}
+		if v.Kind == kindStopped && email != "" {
+			mStart.Show()
+		} else {
+			mStart.Hide()
+		}
+		if note != "" && v.Kind == kindStopped {
+			v.StatusLine = note
+		}
 		if v.Kind != shown { // set the icon only when the state changes
 			systray.SetIcon(trayIcon(v.Kind))
 			shown = v.Kind
@@ -84,6 +106,18 @@ func onReady() {
 		}
 	}
 
+	// Sign in and start can take a while (the browser, the service manager), so
+	// they run off the loop and report back through done.
+	done := make(chan string, 1)
+	busy := false
+	background := func(args ...string) {
+		if busy {
+			return
+		}
+		busy = true
+		go func() { done <- runSyncd(args...) }()
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
 		defer cancel()
@@ -97,6 +131,15 @@ func onReady() {
 			case <-tick.C:
 				cur = poll(ctx, sock, time.Now())
 				showErrors(ctx)
+			case <-mSignIn.ClickedCh:
+				background("login")
+			case <-mSignOut.ClickedCh:
+				note = runSyncd("logout")
+			case <-mStart.ClickedCh:
+				background("service", "install")
+			case note = <-done:
+				busy = false
+				cur = poll(ctx, sock, time.Now())
 			case <-mToggle.ClickedCh:
 				cur = toggle(ctx, sock, cur, time.Now())
 			case <-mDebug.ClickedCh:
