@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +22,11 @@ import (
 type Control struct {
 	paused   atomic.Bool
 	lastSync atomic.Int64 // Unix nanoseconds of the last job that finished without an error; 0 = none yet
+
+	// Optional, set before ServeControl. Level is the daemon's log level, which
+	// POST /debug flips between debug and info; Errors feeds GET /errors.
+	Level  *slog.LevelVar
+	Errors func(context.Context) ([]control.ErrorLine, error)
 }
 
 // Pause stops workers from starting new jobs. Jobs in flight finish; the
@@ -55,6 +61,8 @@ func (c *Control) touch() {
 //	GET  /status  -> control.Status as JSON; info fills in what Control does not know
 //	POST /pause   -> pause, replies with the new Status
 //	POST /resume  -> resume, replies with the new Status
+//	POST /debug   -> flip debug logging, replies with the new Status
+//	GET  /errors  -> the current sync errors as JSON
 //
 // A socket file left by a dead process is replaced; callers hold the single
 // instance lock, so no live daemon can own it.
@@ -81,6 +89,7 @@ func ServeControl(ctx context.Context, sock string, c *Control, info func(contex
 		if c.Paused() {
 			st.State = "paused"
 		}
+		st.Debug = c != nil && c.Level != nil && c.Level.Level() <= slog.LevelDebug
 		if t := c.LastSync(); !t.IsZero() {
 			st.LastSync = t.UTC().Format(time.RFC3339)
 		}
@@ -91,6 +100,29 @@ func ServeControl(ctx context.Context, sock string, c *Control, info func(contex
 	mux.HandleFunc("GET /status", status)
 	mux.HandleFunc("POST /pause", func(w http.ResponseWriter, r *http.Request) { c.Pause(); status(w, r) })
 	mux.HandleFunc("POST /resume", func(w http.ResponseWriter, r *http.Request) { c.Resume(); status(w, r) })
+
+	mux.HandleFunc("POST /debug", func(w http.ResponseWriter, r *http.Request) {
+		if c != nil && c.Level != nil {
+			if c.Level.Level() <= slog.LevelDebug {
+				c.Level.Set(slog.LevelInfo)
+			} else {
+				c.Level.Set(slog.LevelDebug)
+			}
+		}
+		status(w, r)
+	})
+	mux.HandleFunc("GET /errors", func(w http.ResponseWriter, r *http.Request) {
+		var errs []control.ErrorLine
+		if c != nil && c.Errors != nil {
+			var err error
+			if errs, err = c.Errors(r.Context()); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(errs)
+	})
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	go func() {

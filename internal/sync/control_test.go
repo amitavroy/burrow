@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -117,4 +118,24 @@ func TestRunPauseStopsUploadsAndResumeContinues(t *testing.T) {
 	eventually(t, "upload after resume", func() bool { return fd.count("a.txt") == 1 })
 	eventually(t, "last sync", func() bool { return !c.LastSync().IsZero() })
 	eventually(t, "queue drained", func() bool { n, _ := repo.CountJobs(context.Background()); return n == 0 })
+}
+
+func TestControlAPIDebugAndErrors(t *testing.T) {
+	sock := shortSock(t)
+	c := &Control{Level: new(slog.LevelVar), Errors: func(context.Context) ([]control.ErrorLine, error) {
+		return []control.ErrorLine{{Path: "a.txt", Message: "quota exceeded, will retry", Attempts: 2}}, nil
+	}}
+	serve(t, sock, c, 0)
+	ctx := context.Background()
+
+	if st, err := control.Request(ctx, sock, "POST", "/debug"); err != nil || !st.Debug || c.Level.Level() != slog.LevelDebug {
+		t.Errorf("debug on = %+v, %v, level %v", st, err, c.Level.Level())
+	}
+	if st, err := control.Request(ctx, sock, "POST", "/debug"); err != nil || st.Debug || c.Level.Level() != slog.LevelInfo {
+		t.Errorf("debug off = %+v, %v, level %v", st, err, c.Level.Level())
+	}
+	errs, err := control.Errors(ctx, sock)
+	if err != nil || len(errs) != 1 || errs[0].Path != "a.txt" || errs[0].Attempts != 2 {
+		t.Errorf("errors = %+v, %v", errs, err)
+	}
 }

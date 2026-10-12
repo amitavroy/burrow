@@ -9,10 +9,14 @@ package main
 
 import (
 	"context"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"fyne.io/systray"
 
+	"github.com/amitavroy/burrow/internal/control"
 	"github.com/amitavroy/burrow/internal/store"
 )
 
@@ -29,6 +33,17 @@ func onReady() {
 	mStatus.Disable()
 	mToggle := systray.AddMenuItem("Pause uploads", "Stop starting new uploads; the queue keeps filling")
 	systray.AddSeparator()
+	mErrors := systray.AddMenuItem("No errors", "Files that failed to sync")
+	var mErrLines [maxErrorItems]*systray.MenuItem
+	for i := range mErrLines {
+		mErrLines[i] = mErrors.AddSubMenuItem("", "")
+		mErrLines[i].Disable()
+		mErrLines[i].Hide()
+	}
+	mRoot := systray.AddMenuItem("Open sync folder", "The folder syncd watches; change it with `syncd service install --root`")
+	mLogs := systray.AddMenuItem("Open logs folder", "")
+	mDebug := systray.AddMenuItemCheckbox("Debug logging", "Log every step to the log file", false)
+	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit tray", "Close this icon; syncd keeps running")
 
 	shown := ""
@@ -40,10 +55,32 @@ func onReady() {
 		systray.SetTooltip(v.Tooltip)
 		mStatus.SetTitle(v.StatusLine)
 		mToggle.SetTitle(v.Toggle)
+		if v.Debug {
+			mDebug.Check()
+		} else {
+			mDebug.Uncheck()
+		}
 		if v.CanToggle {
 			mToggle.Enable()
 		} else {
 			mToggle.Disable()
+		}
+	}
+
+	showErrors := func(ctx context.Context) {
+		errs, err := control.Errors(ctx, sock)
+		if err != nil {
+			errs = nil // daemon gone: the status line already says so
+		}
+		title, lines := errorMenu(errs)
+		mErrors.SetTitle(title)
+		for i, m := range mErrLines {
+			if i < len(lines) {
+				m.SetTitle(lines[i])
+				m.Show()
+			} else {
+				m.Hide()
+			}
 		}
 	}
 
@@ -52,14 +89,24 @@ func onReady() {
 		defer cancel()
 		cur := poll(ctx, sock, time.Now())
 		apply(cur)
+		showErrors(ctx)
 		tick := time.NewTicker(pollEvery)
 		defer tick.Stop()
 		for {
 			select {
 			case <-tick.C:
 				cur = poll(ctx, sock, time.Now())
+				showErrors(ctx)
 			case <-mToggle.ClickedCh:
 				cur = toggle(ctx, sock, cur, time.Now())
+			case <-mDebug.ClickedCh:
+				cur = toggleDebug(ctx, sock, time.Now())
+			case <-mRoot.ClickedCh:
+				if cur.Root != "" {
+					openFolder(cur.Root)
+				}
+			case <-mLogs.ClickedCh:
+				openFolder(filepath.Dir(store.LogPath()))
 			case <-mQuit.ClickedCh:
 				systray.Quit()
 				return
@@ -67,4 +114,21 @@ func onReady() {
 			apply(cur)
 		}
 	}()
+}
+
+// openFolder shows dir in the system file manager. Failures are ignored: the
+// tray has nowhere useful to report them.
+func openFolder(dir string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", dir)
+	case "windows":
+		cmd = exec.Command("explorer", dir)
+	default:
+		cmd = exec.Command("xdg-open", dir)
+	}
+	if cmd.Start() == nil {
+		go cmd.Wait()
+	}
 }

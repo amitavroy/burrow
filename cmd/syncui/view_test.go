@@ -127,3 +127,17 @@ func TestIcons(t *testing.T) {
 		t.Error("trayIcon is neither PNG nor ICO")
 	}
 }
+
+func TestErrorMenu(t *testing.T) {
+	if title, lines := errorMenu(nil); title != "No errors" || len(lines) != 0 {
+		t.Errorf("none: %q, %v", title, lines)
+	}
+	var errs []control.ErrorLine
+	for i := 0; i < 7; i++ {
+		errs = append(errs, control.ErrorLine{Path: "f" + string(rune('0'+i)), Message: "quota exceeded"})
+	}
+	title, lines := errorMenu(errs)
+	if title != "Errors (7)" || len(lines) != maxErrorItems || lines[0] != "f0: quota exceeded" {
+		t.Errorf("many: %q, %v", title, lines)
+	}
+}

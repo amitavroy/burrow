@@ -501,7 +501,14 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	if err := loadSharedConfig(ctx, uploader, stderr); err != nil {
 		return reportDriveErr(stderr, "run", err)
 	}
-	ctl := &burrowsync.Control{}
+	ctl := &burrowsync.Control{Level: logLevel, Errors: func(ctx context.Context) ([]control.ErrorLine, error) {
+		errs, err := repo.ListErrors(ctx)
+		out := make([]control.ErrorLine, len(errs))
+		for i, e := range errs {
+			out[i] = control.ErrorLine{Path: e.RelPath, Message: e.Message, Attempts: e.Attempts}
+		}
+		return out, err
+	}}
 	sock := ctlSocket()
 	info := func(ctx context.Context) (control.Status, error) {
 		n, err := repo.CountJobs(ctx)

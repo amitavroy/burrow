@@ -29,6 +29,10 @@ func parseLevel(s string) (slog.Level, error) {
 	return l, nil
 }
 
+// logLevel is the live level of the default logger; the control API's
+// POST /debug flips it, so the tray can turn debug logging on without a restart.
+var logLevel = new(slog.LevelVar)
+
 // setupLogger installs the default slog logger. With level set (SYNC_LOG) it
 // writes text to stderr at that level; with level empty it writes info and up
 // to a rotating file at logPath, so stderr stays free for command output. The
@@ -39,13 +43,15 @@ func setupLogger(level string, stderr io.Writer, logPath string) (func() error, 
 		if err != nil {
 			return nil, err
 		}
-		slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: l})))
+		logLevel.Set(l)
+		slog.SetDefault(slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: logLevel})))
 		return func() error { return nil }, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create log directory: %w", err)
 	}
 	w := &lumberjack.Logger{Filename: logPath, MaxSize: 10, MaxBackups: 10, Compress: true}
-	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	logLevel.Set(slog.LevelInfo)
+	slog.SetDefault(slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: logLevel})))
 	return w.Close, nil
 }
