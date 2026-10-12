@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Burrow tray
+Comment=Sync status for Burrow
+Exec=/usr/bin/syncui
+Terminal=false
