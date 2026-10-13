@@ -1,7 +1,7 @@
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
 .DEFAULT_GOAL := help
-.PHONY: help build build-ui vet test release-check release purge
+.PHONY: help build build-ui vet test release-check release publish purge
 
 help: ## Show this list of commands
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -31,6 +31,17 @@ release: ## Publish the GitHub release for the tag at HEAD (git tag vX.Y.Z first
 	@test -z "$$(git status --porcelain)" || { echo "release: working tree is not clean"; exit 1; }
 	@git describe --exact-match --tags HEAD >/dev/null 2>&1 || { echo "release: HEAD is not on a tag (git tag vX.Y.Z)"; exit 1; }
 	set -a; . ./.env; set +a; GITHUB_TOKEN=$$(gh auth token) goreleaser release --clean
+
+# Asks for a tag; empty means the latest vX.Y.Z with Z + 1. Then: push main, tag, push the tag, `make release`.
+publish: ## Tag (asks which; empty = bump the patch number), push and publish a release
+	@test -z "$$(git status --porcelain)" || { echo "publish: working tree is not clean"; exit 1; }
+	@latest=$$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | head -1); \
+	next=$$(echo "$${latest:-v0.0.0}" | awk -F. '{printf "%s.%s.%d", $$1, $$2, $$3 + 1}'); \
+	printf "Latest tag is %s. New tag [%s]: " "$${latest:-none}" "$$next"; read tag; \
+	tag=$${tag:-$$next}; tag=v$${tag\#v}; \
+	echo "$$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "publish: $$tag is not vX.Y.Z"; exit 1; }; \
+	git rev-parse -q --verify "refs/tags/$$tag" >/dev/null && { echo "publish: $$tag already exists"; exit 1; }; \
+	git push origin HEAD && git tag "$$tag" && git push origin "$$tag" && $(MAKE) release
 
 # Never touches the sync folder or Drive. Needs sudo for the apt step.
 purge: ## Remove every trace: service, tray, token, app data, the .deb, local builds
