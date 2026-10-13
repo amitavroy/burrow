@@ -31,7 +31,7 @@ func TestViewOf(t *testing.T) {
 	}{
 		{name: "idle", st: control.Status{State: "running", LastSync: "2026-10-11T12:00:00Z"}, kind: kindRunning,
 			tooltip: "Burrow: up to date", statusLine: "Running · 0 queued · last sync 30s ago", toggle: "Pause uploads", canToggle: true, next: "/pause"},
-		{name: "busy", st: control.Status{State: "running", Queue: 3}, kind: kindRunning,
+		{name: "busy", st: control.Status{State: "running", Queue: 3}, kind: kindSyncing,
 			tooltip: "Burrow: syncing, 3 queued", statusLine: "Running · 3 queued · no sync yet", toggle: "Pause uploads", canToggle: true, next: "/pause"},
 		{name: "paused", st: control.Status{State: "paused", Queue: 5, LastSync: "2026-10-11T11:55:00Z"}, kind: kindPaused,
 			tooltip: "Burrow: paused, 5 queued", statusLine: "Paused · 5 queued · last sync 5m ago", toggle: "Resume uploads", canToggle: true, next: "/resume"},
@@ -81,7 +81,7 @@ func TestPollAndToggleAgainstTheControlSocket(t *testing.T) {
 	}
 
 	v := poll(ctx, sock, now)
-	if v.Kind != kindRunning || !v.CanToggle || v.Toggle != "Pause uploads" {
+	if v.Kind != kindSyncing || !v.CanToggle || v.Toggle != "Pause uploads" {
 		t.Fatalf("running: view = %+v", v)
 	}
 	v = toggle(ctx, sock, v, now)
@@ -89,7 +89,7 @@ func TestPollAndToggleAgainstTheControlSocket(t *testing.T) {
 		t.Fatalf("after pause: view = %+v, paused = %v", v, c.Paused())
 	}
 	v = toggle(ctx, sock, v, now)
-	if v.Kind != kindRunning || c.Paused() {
+	if v.Kind != kindSyncing || c.Paused() {
 		t.Fatalf("after resume: view = %+v, paused = %v", v, c.Paused())
 	}
 	// A disabled item does nothing.
@@ -101,22 +101,30 @@ func TestPollAndToggleAgainstTheControlSocket(t *testing.T) {
 
 func TestIcons(t *testing.T) {
 	seen := map[string]bool{}
-	for _, kind := range []string{kindRunning, kindPaused, kindStopped, "bogus"} {
+	for _, kind := range []string{kindRunning, kindSyncing, kindPaused, kindStopped, "bogus"} {
 		b := iconPNG(kind)
 		img, err := png.Decode(bytes.NewReader(b))
 		if err != nil || img.Bounds().Dx() != iconSize || img.Bounds().Dy() != iconSize {
 			t.Fatalf("%s: not a %dpx PNG: %v", kind, iconSize, err)
 		}
-		if _, _, _, a := img.At(iconSize/2, iconSize/2).RGBA(); a == 0 {
-			t.Errorf("%s: centre is transparent", kind)
+		opaque := 0
+		for y := range iconSize {
+			for x := range iconSize {
+				if _, _, _, a := img.At(x, y).RGBA(); a == 0xffff {
+					opaque++
+				}
+			}
+		}
+		if opaque == 0 {
+			t.Errorf("%s: no opaque logo pixels", kind)
 		}
 		if _, _, _, a := img.At(0, 0).RGBA(); a != 0 {
 			t.Errorf("%s: corner should be transparent", kind)
 		}
 		seen[string(b)] = true
 	}
-	if len(seen) != 3 { // three distinct states; an unknown kind looks like stopped
-		t.Errorf("%d distinct icons, want 3", len(seen))
+	if len(seen) != 4 { // four distinct states; an unknown kind looks like stopped
+		t.Errorf("%d distinct icons, want 4", len(seen))
 	}
 
 	ico := iconICO(iconPNG(kindRunning))

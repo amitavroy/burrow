@@ -1,5 +1,7 @@
 # Burrow
 
+[Burrow]([docs/artwork/banner.png](https://github.com/amitavroy/burrow/blob/main/docs/artwork/banner.png))
+
 A Go daemon that watches one local folder and mirrors it to Google Drive. See `requirements.md` for scope and architecture.
 
 ## Install

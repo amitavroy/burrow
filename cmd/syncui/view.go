@@ -13,6 +13,7 @@ import (
 // one has to tell the colors apart.
 const (
 	kindRunning = "running" // green
+	kindSyncing = "syncing" // blue: running with jobs queued
 	kindPaused  = "paused"  // amber
 	kindStopped = "stopped" // gray: syncd is not running, or not reachable
 )
@@ -50,12 +51,12 @@ func viewOf(st control.Status, err error, now time.Time) view {
 			Toggle:     "Resume uploads", CanToggle: true, next: "/resume", Debug: debug, Root: root,
 		}
 	}
-	tip := "Burrow: up to date"
+	tip, kind := "Burrow: up to date", kindRunning
 	if st.Queue > 0 {
-		tip = "Burrow: syncing, " + queue
+		tip, kind = "Burrow: syncing, "+queue, kindSyncing
 	}
 	return view{
-		Kind: kindRunning, Tooltip: tip,
+		Kind: kind, Tooltip: tip,
 		StatusLine: "Running · " + queue + " · " + last,
 		Toggle:     "Pause uploads", CanToggle: true, next: "/pause", Debug: debug, Root: root,
 	}

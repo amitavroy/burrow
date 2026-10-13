@@ -2,37 +2,41 @@ package main
 
 import (
 	"bytes"
+	_ "embed"
 	"encoding/binary"
 	"image"
 	"image/color"
 	"image/png"
-	"math"
 	"runtime"
 )
 
-const iconSize = 32
+const iconSize = 64 // matches burrow.png
 
 var iconColors = map[string]color.NRGBA{
 	kindRunning: {R: 0x2e, G: 0xa0, B: 0x43, A: 0xff},
+	kindSyncing: {R: 0x1f, G: 0x6f, B: 0xeb, A: 0xff},
 	kindPaused:  {R: 0xe3, G: 0xa0, B: 0x08, A: 0xff},
 	kindStopped: {R: 0x8a, G: 0x8f, B: 0x98, A: 0xff},
 }
 
-// iconPNG draws a filled, anti-aliased circle in the color of kind.
+//go:embed burrow.png
+var logoMask []byte
+
+// iconPNG is the Burrow logo (burrow.png, an alpha mask) tinted in the color of kind.
 func iconPNG(kind string) []byte {
 	c, ok := iconColors[kind]
 	if !ok {
 		c = iconColors[kindStopped]
 	}
+	mask, err := png.Decode(bytes.NewReader(logoMask))
+	if err != nil {
+		panic(err) // embedded asset, checked by TestIcons
+	}
 	img := image.NewNRGBA(image.Rect(0, 0, iconSize, iconSize))
-	mid, r := float64(iconSize)/2, float64(iconSize)/2-2
 	for y := range iconSize {
 		for x := range iconSize {
-			d := math.Hypot(float64(x)+0.5-mid, float64(y)+0.5-mid)
-			a := math.Max(0, math.Min(1, r-d+0.5)) // one pixel of edge smoothing
-			if a > 0 {
-				img.SetNRGBA(x, y, color.NRGBA{R: c.R, G: c.G, B: c.B, A: uint8(a * 255)})
-			}
+			_, _, _, a := mask.At(x, y).RGBA()
+			img.SetNRGBA(x, y, color.NRGBA{R: c.R, G: c.G, B: c.B, A: uint8(a >> 8)})
 		}
 	}
 	var b bytes.Buffer
