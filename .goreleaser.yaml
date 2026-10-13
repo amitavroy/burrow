@@ -64,3 +64,5 @@ nfpms:
         type: config|noreplace
         file_info:
           mode: 0644
+    scripts:
+      preremove: packaging/prerm.sh

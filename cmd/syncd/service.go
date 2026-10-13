@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/amitavroy/burrow/internal/drive"
+	"github.com/amitavroy/burrow/internal/store"
 )
 
 // The names under which the daemon is registered with each OS.
@@ -41,6 +42,9 @@ var (
 		}
 		return filepath.EvalSymlinks(p)
 	}
+	tempDir    = os.TempDir
+	dataDir    = func() string { return filepath.Dir(store.DefaultPath()) }
+	signOut    = logout
 	runCommand = func(name string, args ...string) (string, error) {
 		out, err := exec.Command(name, args...).CombinedOutput()
 		return strings.TrimSpace(string(out)), err
@@ -325,6 +329,11 @@ func serviceInstall(rootDir string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "syncd: service install failed: %v\n", err)
 		return 1
 	}
+	// The service remembers this path, and a temp dir is wiped on reboot.
+	if tmp := tempDir(); strings.HasPrefix(exe, tmp+string(filepath.Separator)) {
+		fmt.Fprintf(stderr, "syncd: %s is in a temp folder that is cleared on reboot; install syncd somewhere permanent (such as /usr/bin or ~/.local/bin) and run `syncd service install` from there\n", exe)
+		return 1
+	}
 	// The daemon reads its OAuth client from .env in its working directory, so
 	// the service must start where that file is: where you ran this command.
 	// A release build has the client baked in and needs no .env.
@@ -499,5 +508,49 @@ func serviceStatus(stdout, stderr io.Writer) int {
 		return 1
 	}
 	fmt.Fprintln(stdout, out)
+	return 0
+}
+
+// stopTray quits a running tray; none running is fine.
+func stopTray() {
+	if goos == "windows" {
+		_, _ = runCommand("taskkill", "/IM", "syncui.exe", "/F")
+		return
+	}
+	_, _ = runCommand("pkill", "-x", "syncui")
+}
+
+// uninstallCmd removes everything syncd put in your home: the login
+// registrations, a running tray, and with --purge the saved sign-in and the
+// app data dir (database, logs, state). The sync root and Drive are untouched.
+// The package itself is removed with the package manager.
+func uninstallCmd(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("uninstall", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	purge := fs.Bool("purge", false, "also sign out (delete the saved token) and delete the app data dir")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: syncd uninstall [--purge]")
+		return 2
+	}
+	if code := serviceUninstall(stdout, stderr); code != 0 {
+		return code
+	}
+	stopTray()
+	if *purge {
+		if code := signOut(stdout, stderr); code != 0 {
+			return code
+		}
+		dir := dataDir()
+		if err := os.RemoveAll(dir); err != nil {
+			fmt.Fprintf(stderr, "syncd: remove %s: %v\n", dir, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "removed %s\n", dir)
+	} else {
+		fmt.Fprintln(stdout, "kept your sign-in and data; add --purge to remove them too")
+	}
 	return 0
 }

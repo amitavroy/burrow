@@ -83,11 +83,12 @@ type fakeOS struct {
 func useFakeOS(t *testing.T, goosName string) *fakeOS {
 	t.Helper()
 	f := &fakeOS{config: t.TempDir(), cwd: t.TempDir(), envFile: true}
-	oldGOOS, oldCfg, oldWd, oldExe, oldRun, oldHome := goos, userConfigDir, getwd, executable, runCommand, homeDir
+	oldGOOS, oldCfg, oldWd, oldExe, oldRun, oldHome, oldTmp := goos, userConfigDir, getwd, executable, runCommand, homeDir, tempDir
 	t.Cleanup(func() {
-		goos, userConfigDir, getwd, executable, runCommand, homeDir = oldGOOS, oldCfg, oldWd, oldExe, oldRun, oldHome
+		goos, userConfigDir, getwd, executable, runCommand, homeDir, tempDir = oldGOOS, oldCfg, oldWd, oldExe, oldRun, oldHome, oldTmp
 	})
 	goos = goosName
+	tempDir = func() string { return "/nonexistent-tmp" }
 	userConfigDir = func() (string, error) { return f.config, nil }
 	homeDir = func() (string, error) { return f.config, nil }
 	getwd = func() (string, error) { return f.cwd, nil }
@@ -349,5 +350,50 @@ func TestNoTrayBinaryIsAHintNotAnError(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(f.config, "autostart")); err == nil {
 		t.Error("autostart dir created without a tray binary")
+	}
+}
+
+func TestServiceInstallRefusesATempBinary(t *testing.T) {
+	f := useFakeOS(t, "linux")
+	f.withEnv(t)
+	tempDir = func() string { return "/tmp" }
+	executable = func() (string, error) { return "/tmp/x/syncd", nil }
+	var out, errb bytes.Buffer
+	if code := serviceCmd([]string{"install"}, &out, &errb); code != 1 || !strings.Contains(errb.String(), "temp folder") || len(f.cmds) != 0 {
+		t.Errorf("code %d, stderr %q, commands %v", code, errb.String(), f.cmds)
+	}
+}
+
+func TestUninstallPurge(t *testing.T) {
+	f := useFakeOS(t, "linux")
+	data := t.TempDir()
+	if err := os.WriteFile(filepath.Join(data, "burrow.db"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldData, oldOut := dataDir, signOut
+	t.Cleanup(func() { dataDir, signOut = oldData, oldOut })
+	dataDir = func() string { return data }
+	signedOut := false
+	signOut = func(io.Writer, io.Writer) int { signedOut = true; return 0 }
+
+	var out, errb bytes.Buffer
+	if code := uninstallCmd(nil, &out, &errb); code != 0 || signedOut {
+		t.Fatalf("plain uninstall: code %d, signedOut %v, stderr %q", code, signedOut, errb.String())
+	}
+	if _, err := os.Stat(data); err != nil {
+		t.Errorf("data dir removed without --purge: %v", err)
+	}
+	if !strings.Contains(strings.Join(f.cmds, "\n"), "pkill -x syncui") {
+		t.Errorf("tray not stopped: %v", f.cmds)
+	}
+
+	if code := uninstallCmd([]string{"--purge"}, &out, &errb); code != 0 || !signedOut {
+		t.Fatalf("purge: code %d, signedOut %v, stderr %q", code, signedOut, errb.String())
+	}
+	if _, err := os.Stat(data); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("data dir still there: %v", err)
+	}
+	if code := uninstallCmd([]string{"x"}, &out, &errb); code != 2 {
+		t.Errorf("extra arg: code %d", code)
 	}
 }
