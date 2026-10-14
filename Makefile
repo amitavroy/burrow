@@ -38,7 +38,7 @@ publish: ## Tag (asks which; empty = bump the patch number), push and publish a 
 	@latest=$$(git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | head -1); \
 	next=$$(echo "$${latest:-v0.0.0}" | awk -F. '{printf "%s.%s.%d", $$1, $$2, $$3 + 1}'); \
 	printf "Latest tag is %s. New tag [%s]: " "$${latest:-none}" "$$next"; read tag; \
-	tag=$${tag:-$$next}; tag=v$${tag\#v}; \
+	tag=$${tag:-$$next}; tag=v$${tag#v}; \
 	echo "$$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$$' || { echo "publish: $$tag is not vX.Y.Z"; exit 1; }; \
 	git rev-parse -q --verify "refs/tags/$$tag" >/dev/null && { echo "publish: $$tag already exists"; exit 1; }; \
 	git push origin HEAD && git tag "$$tag" && git push origin "$$tag" && $(MAKE) release
