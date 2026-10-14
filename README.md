@@ -8,7 +8,7 @@ A Go daemon that watches one local folder and mirrors it to Google Drive. See `r
 
 Pick one. The binary must stay where you put it: the service remembers its path, and `syncd service install` refuses a binary in a temp folder.
 
-- **Debian, Ubuntu (`.deb`):** download `burrow_<version>_linux_<arch>.deb` from the GitHub releases page, then `sudo apt install ./burrow_*.deb`. It puts `syncd` and `syncui` in `/usr/bin` and starts the tray for every user at their next login.
+- **Debian, Ubuntu (`.deb`):** download `burrow_<version>_linux_<arch>.deb` from the GitHub releases page, then `sudo apt install ./burrow_*.deb`. It puts `syncd` and `syncui` in `/usr/bin`, adds a **Burrow** entry to the app menu (search for "Burrow" to start the tray right away), and starts the tray for every user at their next login.
 - **Other Linux, Windows:** unpack the release archive and move `syncd` (and `syncui`, kept next to it) somewhere permanent, such as `~/.local/bin`.
 - **macOS:** unpack the archive (`syncd` only) and move it somewhere permanent. Run `xattr -d com.apple.quarantine syncd` once, since the binary is not code-signed.
 - **From source:** do "Google Cloud setup" and "Local configuration" below, then `make build` (and `make build-ui` for the tray). Keep `bin/syncd` where it is.
@@ -21,16 +21,11 @@ Check it with `syncd version`. Then sign in and start the service as below. More
    - On a `.deb` system: `sudo dpkg -i burrow_*.deb` (see "Install from a release"), then go to step 2.
    - From a release: unpack the archive for your system (see "Install from a release" below) and move `syncd` to a place it will stay, such as `~/.local/bin`. The service remembers the path it was installed from, so do not move or delete the binary afterwards.
    - From source: do the "Google Cloud setup" and "Local configuration" below, then `make build`. The binary is `bin/syncd`; keep it where it is.
-2. **Sign in once:** `syncd login`. A browser opens; `syncd whoami` then prints your email.
-3. **Install the background service**, which starts `syncd run` whenever you log in:
-   ```
-   syncd service install            # syncs ~/MySync
-   syncd service install --root ~/Sync   # or another folder
-   ```
-   From source, run this from the folder that holds your `.env`. The folder is created if it does not exist.
+2. **Start the tray and sign in.** On a `.deb` install, search for "Burrow" in your app menu (or log out and in; otherwise run `syncui &`), click **Sign in…** in the tray menu, and finish in the browser. Without the tray: `syncd login`.
+3. **That is all.** Signing in installs and starts the background service for `~/MySync` and, on a machine that has not synced before, downloads what is already in your Drive folder into it (the tray shows `Downloading 12 of 340…`). To use another folder run `syncd service install --root ~/Sync`; to sign in without installing the service, `syncd login --no-service`. From source, run these from the folder that holds your `.env`.
 4. **Check it:** `syncd service status` and `syncd ctl status` (state, queue, last sync). Put a file in the sync folder and it appears in Drive within about a minute. Failures show up in `syncd errors`.
 5. **Linux only, to start before you log in:** `loginctl enable-linger $USER`. Without it the service starts when you log in, not when the machine boots.
-6. **Tray icon:** `syncd service install` also starts the tray at login when a `syncui` binary sits next to `syncd` (the Linux and Windows release archives hold both; from source run `make build-ui` first, then `syncd service install` again). On Linux it writes `~/.config/autostart/burrow-syncui.desktop`; on macOS a second launch agent; on Windows a second Run-key entry. Start it right away with `syncui &`. `syncd` syncs with or without it, and quitting the tray does not stop syncing.
+6. **Tray icon:** the tray registers itself to start at every login the first time it runs (on Linux `~/.config/autostart/burrow-syncui.desktop`; on macOS a launch agent; on Windows a Run-key entry), and `syncd login` and `syncd service install` register it too when a `syncui` binary sits next to `syncd`. Starting it twice leaves one icon. `syncd` syncs with or without it, and quitting the tray does not stop syncing. **No icon on GNOME?** Stock GNOME hides tray icons: install the AppIndicator extension (`sudo apt install gnome-shell-extension-appindicator`, then enable it in the Extensions app and log out and in; Ubuntu ships it enabled). To stop the tray starting at login, put `Hidden=true` in `~/.config/autostart/burrow-syncui.desktop`.
 
 If nothing syncs after a restart: `syncd service status` (Linux: `systemctl --user status syncd.service`, logs with `journalctl --user -u syncd.service -b`). A "not signed in" or "session expired" message means run `syncd login` again.
 
@@ -174,7 +169,7 @@ Every uploaded file gets a row in the state database (see below). A file whose s
 
 ## Restoring on a new machine
 
-`syncd restore [--root DIR]` fills the sync root (default `~/MySync`) from Drive and records every file in the state database. A file that is missing is downloaded (verified, then renamed into place); one that is already there with the same content is only recorded; one with different content is kept as `name (conflicted copy, <host>, <date>).ext` and Drive's version is downloaded to the original path, so both survive. Run it again if some files failed, then `syncd run` to keep syncing. Use a machine as restore-only, or give it its own root, until two-way sync exists.
+`syncd restore [--root DIR]` fills the sync root (default `~/MySync`) from Drive and records every file in the state database. A file that is missing is downloaded (verified, then renamed into place); one that is already there with the same content is only recorded; one with different content is kept as `name (conflicted copy, <host>, <date>).ext` and Drive's version is downloaded to the original path, so both survive. Run it again if some files failed, then `syncd run` to keep syncing. You usually do not need to run it by hand: the first `syncd run` on a machine whose database has never synced (a new install, or after `syncd uninstall --purge`) does the same restore by itself before it starts watching, and shows it as `Downloading N of M…` in the tray. Files that fail appear in `syncd errors`; run `syncd restore` to try them again. Use a machine as restore-only, or give it its own root, until two-way sync exists.
 
 ## Running live
 

@@ -82,8 +82,20 @@ func reportDriveErr(stderr io.Writer, cmd string, err error) int {
 }
 
 // login signs in through the browser, saves the refresh token to the keychain
-// and prints the account email.
-func login(stdout, stderr io.Writer) int {
+// and prints the account email. Unless --no-service is given it then installs
+// and starts the background service (or restarts one that is installed), so a
+// new machine syncs, and restores from Drive, without another step.
+func login(args []string, stdout, stderr io.Writer) int {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	noService := fs.Bool("no-service", false, "only sign in; do not install or start the sync service")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(stderr, "usage: syncd login [--no-service]")
+		return 2
+	}
 	client, err := drive.LoadClient()
 	if err != nil {
 		fmt.Fprintf(stderr, "syncd: %v\n", err)
@@ -109,6 +121,9 @@ func login(stdout, stderr io.Writer) int {
 	}
 	cacheEmail(stderr, email)
 	fmt.Fprintf(stdout, "Signed in as %s\n", email)
+	if !*noService {
+		startAfterLogin(stdout, stderr)
+	}
 	return 0
 }
 
@@ -533,13 +548,15 @@ func runCmd(args []string, stdout, stderr io.Writer) int {
 	}
 	defer os.Remove(sock)
 	err = burrowsync.Run(ctx, root, repo, uploader.Upload, reportEvent(stdout, stderr), burrowsync.RunOptions{
-		Workers: *workers,
-		Settle:  *settle,
-		Move:    uploader.Move,
-		Trash:   uploader.Trash,
-		MoveDir: uploader.MoveFolder,
-		Control: ctl,
-		Changes: &burrowsync.ChangeSource{Host: func() string { h, _ := os.Hostname(); return h }(), Start: uploader.StartPageToken, List: uploader.Changes, Download: uploader.Download},
+		Workers:   *workers,
+		Settle:    *settle,
+		Move:      uploader.Move,
+		Trash:     uploader.Trash,
+		MoveDir:   uploader.MoveFolder,
+		Control:   ctl,
+		Changes:   &burrowsync.ChangeSource{Host: func() string { h, _ := os.Hostname(); return h }(), Start: uploader.StartPageToken, List: uploader.Changes, Download: uploader.Download},
+		Remote:    uploader.ListTree,
+		OnRestore: reportRestore(stdout, stderr),
 		OnStart: func(dirs int) {
 			fmt.Fprintf(stderr, "watching %d directories under %s (Ctrl+C to stop)\n", dirs, root)
 		},
@@ -1114,7 +1131,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, Version)
 		return 0
 	case "login":
-		return login(stdout, stderr)
+		return login(args[1:], stdout, stderr)
 	case "whoami":
 		return whoami(stdout, stderr)
 	case "logout":

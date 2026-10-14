@@ -407,3 +407,126 @@ func TestRunFileCreatedDuringStartIsUploadedOnce(t *testing.T) {
 	eventually(t, "upload", func() bool { return fd.count("racy.txt") >= 1 })
 	stays(t, "exactly one upload", 500*time.Millisecond, func() bool { return fd.count("racy.txt") == 1 })
 }
+
+// changesRig is a fake Drive changes feed for the first-run restore tests.
+type changesRig struct {
+	mu     stdsync.Mutex
+	starts int
+	lists  int
+}
+
+func (c *changesRig) source(fr *fakeRemote) *ChangeSource {
+	return &ChangeSource{
+		Host:     "laptop",
+		Every:    time.Hour, // the poller stays out of these tests
+		Download: fr.download,
+		Start: func(context.Context) (string, error) {
+			c.mu.Lock()
+			defer c.mu.Unlock()
+			c.starts++
+			return "tok-1", nil
+		},
+		List: func(_ context.Context, tok string) ([]drive.Change, string, error) { return nil, tok, nil },
+	}
+}
+
+func (c *changesRig) remote(fr *fakeRemote) func(context.Context) ([]drive.RemoteFile, error) {
+	return func(context.Context) ([]drive.RemoteFile, error) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.lists++
+		return fr.files, nil
+	}
+}
+
+func TestRunFirstStartRestoresDriveIntoAnEmptyRoot(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := openRepo(t)
+	fr := newFakeRemote()
+	fr.add("1", "a.txt", "alpha")
+	fr.add("2", "docs/b.txt", "beta")
+	var rig changesRig
+	fd := &fakeDrive{}
+
+	startRun(t, root, repo, fd, RunOptions{Changes: rig.source(fr), Remote: rig.remote(fr)})
+
+	for rel, want := range map[string]string{"a.txt": "alpha", "docs/b.txt": "beta"} {
+		got, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil || string(got) != want {
+			t.Errorf("%s = %q, %v; want %q", rel, got, err, want)
+		}
+	}
+	if tok, _, _ := repo.GetMeta(ctx, store.MetaChangesToken); tok != "tok-1" {
+		t.Errorf("changes token = %q, want tok-1", tok)
+	}
+	row, err := repo.Get(ctx, "a.txt")
+	if err != nil || row.DriveFileID != "1" {
+		t.Errorf("row = %+v, %v", row, err)
+	}
+	stays(t, "downloads are not uploaded back", 400*time.Millisecond, func() bool { return fd.total() == 0 })
+}
+
+func TestRunWithAChangesTokenDoesNotRestore(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := openRepo(t)
+	if err := repo.SetMeta(ctx, store.MetaChangesToken, "old"); err != nil {
+		t.Fatal(err)
+	}
+	fr := newFakeRemote()
+	fr.add("1", "a.txt", "alpha")
+	var rig changesRig
+
+	startRun(t, root, repo, &fakeDrive{}, RunOptions{Changes: rig.source(fr), Remote: rig.remote(fr)})
+
+	if rig.lists != 0 || rig.starts != 0 {
+		t.Errorf("listed %d times, started %d times; want neither", rig.lists, rig.starts)
+	}
+	if _, err := os.Stat(filepath.Join(root, "a.txt")); err == nil {
+		t.Error("a.txt was downloaded")
+	}
+}
+
+// One bad file does not stop the restore or hold back the token: it sits in sync_errors.
+func TestRunRestoreRecordsAFailedFile(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := openRepo(t)
+	fr := newFakeRemote()
+	fr.add("1", "good.txt", "ok")
+	fr.add("2", "bad.txt", "no")
+	fr.failID = "2"
+	var rig changesRig
+
+	startRun(t, root, repo, &fakeDrive{}, RunOptions{Changes: rig.source(fr), Remote: rig.remote(fr)})
+
+	if _, err := os.Stat(filepath.Join(root, "good.txt")); err != nil {
+		t.Errorf("good.txt: %v", err)
+	}
+	errs, err := repo.ListErrors(ctx)
+	if err != nil || len(errs) != 1 || errs[0].RelPath != "bad.txt" {
+		t.Fatalf("errors = %+v, %v", errs, err)
+	}
+	if tok, _, _ := repo.GetMeta(ctx, store.MetaChangesToken); tok == "" {
+		t.Error("token not stored after a restore with one failure")
+	}
+}
+
+// A lost sign-in ends Run and leaves the token unset, so the next start restores again.
+func TestRunRestoreSignInLostKeepsTokenUnset(t *testing.T) {
+	root := t.TempDir()
+	repo := openRepo(t)
+	fr := newFakeRemote()
+	var rig changesRig
+	remote := func(context.Context) ([]drive.RemoteFile, error) { return nil, drive.ErrSessionExpired }
+
+	err := Run(context.Background(), root, repo, (&fakeDrive{}).upload, func(Event) {}, RunOptions{Changes: rig.source(fr), Remote: remote})
+
+	if !errors.Is(err, drive.ErrSessionExpired) {
+		t.Fatalf("err = %v, want ErrSessionExpired", err)
+	}
+	if tok, _, _ := repo.GetMeta(context.Background(), store.MetaChangesToken); tok != "" {
+		t.Errorf("token = %q, want unset", tok)
+	}
+}

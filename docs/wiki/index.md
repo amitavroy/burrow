@@ -570,6 +570,22 @@ for each remote file at <root>/<rel_path>:
 - **Single process:** like `run` and `sync` it takes the database lock.
 - **Not done:** no parallel downloads, no restore of modification times (the row holds the time the file was written, which is what the scan compares), and the rebuild guarantee is tested end to end (see Rebuild from Drive).
 
+### First-run restore
+
+`syncd run` restores from Drive by itself when the state database has no changes token (`meta.changes_page_token`), which means this database has never seen Drive: a new machine, or the database was deleted (it is a disposable cache). `firstRunRestore` in `internal/sync/run.go` runs inside `Run`, before the watcher starts, using `RunOptions.Remote` (`Uploader.ListTree`) and the `ChangeSource` download.
+
+```
+no changes token? -> start token (changes.getStartPageToken)  <- first, so a Drive edit during the restore is in the first poll
+                  -> ListTree -> Restore (same keep-both rules as syncd restore)
+                  -> store the start token                     <- only after a complete pass
+```
+
+- **Why the token is the marker, not an empty folder:** a folder can be empty because the user deleted everything; a missing token means this database never synced. A purged database restores again; files already in the folder match Drive and are only recorded, and different ones become conflicted copies, so nothing is overwritten or uploaded twice.
+- **Before the watcher:** the downloads are written before the watcher exists, so they are never seen as local edits and uploaded back (the `expected` echo map is only for the poller). Files the user adds meanwhile are found by the reconcile that follows.
+- **Failures:** one bad file is recorded in `sync_errors` (message from `drive.Describe`) and does not stop the pass or hold back the token; `syncd restore` retries it. A lost sign-in, a failing Drive listing or database, or a cancel ends `Run` with the token unset, so the next start restores again (finished files are `matched`). A non-sign-in error exits `run` non-zero, and the service retries it a minute later.
+- **Progress:** `Control` keeps the done and total counts; `GET /status` carries `restore_done` and `restore_total` (absent when idle), and the tray shows `Downloading N of M…` with the blue icon.
+- **Not done:** no parallel downloads (see Restore), and no restore when a token exists, even if the folder is empty (run `syncd restore`).
+
 ## Rebuild from Drive
 
 The checkpoint of the restore work: the database is a disposable cache, so deleting it loses nothing and costs no re-upload. This is a test (`internal/sync/rebuild_test.go`), not a command.
@@ -648,7 +664,9 @@ syncd service status                 # installed? enabled? active?
 - **Safe to repeat:** `install` again overwrites the registration (macOS boots the old one out first), and `uninstall` on something not installed succeeds. A running daemon keeps running after `uninstall` until it is stopped.
 - **Not verified on a real system:** the tests render the files and check the commands, but no real systemd, launchd or registry was driven. Install on a test machine, log out and in (or reboot), and check `syncd ctl status` before relying on it, especially on macOS and Windows. Windows shows a console window at login until the tray app (ticket 35) replaces it.
 
-**Tray autostart.** After the daemon is installed, `syncd service install` also registers `syncui` when a file of that name sits next to the `syncd` binary; without one it prints a hint and goes on. It is best effort: a failure is reported on stderr but never fails the install. The tray runs in the desktop session, not as a service: Linux writes an XDG autostart entry (`<config dir>/autostart/burrow-syncui.desktop`), macOS a second launch agent (`dev.burrow.syncui`, `RunAtLoad`, no `KeepAlive`, so Quit tray stays quit; `LimitLoadToSessionType` Aqua), Windows a second Run-key value (`syncui`). `service uninstall` removes both. Install does not start the tray on Linux or Windows (it starts at the next login; run `syncui` to start it now).
+**Sign-in starts the service.** `syncd login` (unless `--no-service`) calls `startAfterLogin` (`cmd/syncd/service.go`): when no service is installed it runs the same install as `service install` with the default root; when one is installed it keeps its root, registers the tray if there is one beside `syncd`, and restarts the service (`systemctl --user restart`, `launchctl kickstart -k`), since it may have stopped for want of a sign-in. The sign-in itself has succeeded by then, so a failure is a warning on stderr and `login` still exits 0; the tray's **Start syncing** item stays as a fallback for that case. The tray's **Sign in…** runs `syncd login`, so it gets all of this.
+
+**Tray autostart.** After the daemon is installed, `syncd service install` also registers `syncui` when a file of that name sits next to the `syncd` binary; without one it prints a hint and goes on. It is best effort: a failure is reported on stderr but never fails the install. The tray runs in the desktop session, not as a service: Linux writes an XDG autostart entry (`<config dir>/autostart/burrow-syncui.desktop`), macOS a second launch agent (`dev.burrow.syncui`, `RunAtLoad`, no `KeepAlive`, so Quit tray stays quit; `LimitLoadToSessionType` Aqua), Windows a second Run-key value (`syncui`). `service uninstall` removes both. Install does not start the tray on Linux or Windows (it starts at the next login; run `syncui` to start it now). The code is `internal/autostart`, shared with the tray: `Install` and `Uninstall` for the commands, and `Ensure`, which `syncui` runs at every start. `Ensure` writes the user entry only when it is missing or points at another path, leaves a `Hidden=true` user entry alone (the opt-out), and skips the user entry when the package's `/etc/xdg/autostart` entry already starts the same binary (a same-named user file would shadow it). On macOS it only writes the plist, since bootstrapping would start a second tray. The tray does not register itself from a temp folder.
 
 **Temp-folder guard.** Install refuses (exit 1, nothing written) when the binary sits under the OS temp dir, because the registration stores that path and a reboot wipes it: the unit then fails every minute with `203/EXEC`. Install from `/usr/bin`, `~/.local/bin` or `bin/`. The temp dir is the replaceable `tempDir`, so the tests' temp-dir binaries still install.
 
@@ -669,7 +687,9 @@ syncd service status                 # installed? enabled? active?
 - **Socket:** `store.SocketPath()`, the same file `syncd run` serves and `syncd ctl` reads.
 - **Platforms:** Linux uses the StatusNotifier D-Bus interface (pure Go; some desktops, GNOME among them, need a tray extension to show the icon). macOS needs cgo, so the macOS `make vet` skips `cmd/syncui`. On Windows build with `-ldflags "-H=windowsgui"` so no console window opens (the release build does this). `syncui` has to run in your desktop session, not as a system service.
 - **Not verified on a display:** the tests cover the logic and the icon data; on this build the process starts and runs without error, but nobody has looked at the icon on Linux, macOS or Windows yet. Start `syncd run` (or the service), run `bin/syncui`, and check the icon, the tooltip and the pause item.
-- **Not done:** no autostart for the tray (ticket 36 or the service install can add it), no errors list, logs folder, debug toggle or root change (ticket 36), and no notifications.
+- **Autostart and one instance:** see Service install (tray autostart). A second `syncui` exits quietly: it takes `syncui.lock` in the data dir (`store.Lock`) and finds it held. On Linux the `.deb` also installs `/usr/share/applications/burrow.desktop` and a 256 px icon, so "Burrow" is searchable in the app menu and the tray can be started right after install, without a relogin (a package script runs as root and cannot start a program in the user's session). macOS (an `.app` bundle) and Windows (a Start menu shortcut) have no such entry yet.
+- **Restore progress:** while the first-run restore runs the line reads `Downloading N of M from Drive…` with the blue icon.
+- **Not done:** no errors list, logs folder, debug toggle or root change (ticket 36), and no notifications.
 
 ## Release builds
 

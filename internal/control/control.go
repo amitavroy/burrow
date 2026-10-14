@@ -30,6 +30,11 @@ type Status struct {
 	Root     string `json:"root"`
 	Debug    bool   `json:"debug"` // debug logging is on
 	Version  string `json:"version"`
+
+	// RestoreTotal is how many files the first-run restore from Drive is
+	// handling (0 when it is not running); RestoreDone how many it has finished.
+	RestoreDone  int `json:"restore_done,omitempty"`
+	RestoreTotal int `json:"restore_total,omitempty"`
 }
 
 // ErrorLine is one current sync error, as GET /errors returns it.

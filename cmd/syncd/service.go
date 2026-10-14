@@ -13,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/amitavroy/burrow/internal/autostart"
 	"github.com/amitavroy/burrow/internal/drive"
 	"github.com/amitavroy/burrow/internal/store"
 )
@@ -24,10 +25,7 @@ const (
 	windowsRunValue = "syncd"
 
 	// The tray app, started in the desktop session at login (never a system service).
-	trayLaunchdLabel = "dev.burrow.syncui"
-	trayDesktopFile  = "burrow-syncui.desktop"
-	trayWindowsValue = "syncui"
-	windowsRunKey    = `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`
+	windowsRunKey = autostart.WindowsKey
 )
 
 // Replaced by tests, so they never touch the real service manager.
@@ -136,46 +134,13 @@ func trayExe(exe string) string {
 	return p
 }
 
-// trayDesktopEntry is the XDG autostart entry that starts the tray with the
-// desktop session on Linux.
-func trayDesktopEntry(exe string) string {
-	r := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "`", "\\`", "$", `\$`)
-	return fmt.Sprintf("[Desktop Entry]\nType=Application\nName=Burrow tray\nComment=Sync status for Burrow\nExec=\"%s\"\nTerminal=false\n", r.Replace(exe))
-}
-
-// trayPlist is the launch agent that starts the tray at login on macOS. It is
-// not restarted: quitting the tray from its menu should stay quit.
-func trayPlist(exe string) string {
-	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>%s</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>%s</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>LimitLoadToSessionType</key><string>Aqua</string>
-</dict>
-</plist>
-`, trayLaunchdLabel, xmlEscape(exe))
-}
-
-func trayDesktopPath() (string, error) {
-	dir, err := userConfigDir()
-	if err != nil {
-		return "", err
+// trayEnv is the machine as the tray autostart code sees it: the same seams
+// the rest of the service code uses, so tests never touch the real one.
+func trayEnv() autostart.Env {
+	return autostart.Env{
+		GOOS: goos, ConfigDir: userConfigDir, HomeDir: homeDir, Run: runCommand,
+		SystemDir: autostart.SystemDir, UID: os.Getuid(),
 	}
-	return filepath.Join(dir, "autostart", trayDesktopFile), nil
-}
-
-func trayPlistPath() (string, error) {
-	home, err := homeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, "Library", "LaunchAgents", trayLaunchdLabel+".plist"), nil
 }
 
 // installTray registers the tray app to start at login, when there is one next
@@ -187,66 +152,16 @@ func installTray(exe string, stdout, stderr io.Writer) {
 		fmt.Fprintln(stdout, "no syncui next to syncd, so no tray icon at login (build it with `make build-ui`, then run `syncd service install` again)")
 		return
 	}
-	var err error
-	switch goos {
-	case "linux":
-		var path string
-		if path, err = trayDesktopPath(); err == nil {
-			if err = os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
-				err = os.WriteFile(path, []byte(trayDesktopEntry(tray)), 0o644)
-			}
-		}
-		if err == nil {
-			fmt.Fprintf(stdout, "installed %s; the tray icon starts with your next login (start it now: %s &)\n", path, tray)
-		}
-	case "darwin":
-		var path string
-		if path, err = trayPlistPath(); err == nil {
-			if err = os.MkdirAll(filepath.Dir(path), 0o755); err == nil {
-				_, _ = runCommand("launchctl", "bootout", launchdDomain()+"/"+trayLaunchdLabel)
-				if err = os.WriteFile(path, []byte(trayPlist(tray)), 0o644); err == nil {
-					err = run1("launchctl", "bootstrap", launchdDomain(), path)
-				}
-			}
-		}
-		if err == nil {
-			fmt.Fprintf(stdout, "installed %s and started the tray icon; it starts when you log in\n", path)
-		}
-	case "windows":
-		if err = run1("reg", "add", windowsRunKey, "/v", trayWindowsValue, "/t", "REG_SZ", "/d", `"`+tray+`"`, "/f"); err == nil {
-			fmt.Fprintf(stdout, "installed %s\\%s; the tray icon starts with your next login\n", windowsRunKey, trayWindowsValue)
-		}
-	}
+	msg, err := trayEnv().Install(tray)
 	if err != nil {
 		fmt.Fprintf(stderr, "syncd: tray icon not installed: %v\n", err)
+		return
 	}
+	fmt.Fprintln(stdout, msg)
 }
 
 // uninstallTray removes the tray registration; already gone is fine.
-func uninstallTray() error {
-	switch goos {
-	case "linux":
-		path, err := trayDesktopPath()
-		if err == nil {
-			if err = os.Remove(path); errors.Is(err, os.ErrNotExist) {
-				err = nil
-			}
-		}
-		return err
-	case "darwin":
-		path, err := trayPlistPath()
-		if err == nil {
-			_, _ = runCommand("launchctl", "bootout", launchdDomain()+"/"+trayLaunchdLabel)
-			if err = os.Remove(path); errors.Is(err, os.ErrNotExist) {
-				err = nil
-			}
-		}
-		return err
-	case "windows":
-		_, _ = runCommand("reg", "delete", windowsRunKey, "/v", trayWindowsValue, "/f")
-	}
-	return nil
-}
+func uninstallTray() error { return trayEnv().Uninstall() }
 
 func unitPath() (string, error) {
 	dir, err := userConfigDir()
@@ -509,6 +424,34 @@ func serviceStatus(stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintln(stdout, out)
 	return 0
+}
+
+// startAfterLogin makes sure the sync service is installed and running once the
+// user has signed in: it installs it with the default root, or restarts an
+// installed one (which may have stopped for want of a sign-in). The sign-in
+// itself has succeeded, so a failure here is a warning, not an error.
+func startAfterLogin(stdout, stderr io.Writer) {
+	if serviceStatus(io.Discard, io.Discard) != 0 {
+		if serviceInstall("", stdout, stderr) != 0 {
+			fmt.Fprintln(stderr, "syncd: signed in, but the sync service did not start; fix the problem above and run `syncd service install`")
+		}
+		return
+	}
+	if exe, err := executable(); err == nil {
+		installTray(exe, stdout, stderr) // a tarball install has no autostart entry until now
+	}
+	var err error
+	switch goos {
+	case "linux":
+		_, err = runCommand("systemctl", "--user", "restart", systemdUnitName)
+	case "darwin":
+		_, err = runCommand("launchctl", "kickstart", "-k", launchdDomain()+"/"+launchdLabel)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "syncd: signed in, but could not restart the sync service: %v\n", err)
+		return
+	}
+	fmt.Fprintln(stdout, "sync service restarted")
 }
 
 // stopTray quits a running tray; none running is fine.

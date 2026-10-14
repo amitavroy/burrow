@@ -33,6 +33,8 @@ func TestViewOf(t *testing.T) {
 			tooltip: "Burrow: up to date", statusLine: "Running · 0 queued · last sync 30s ago", toggle: "Pause uploads", canToggle: true, next: "/pause"},
 		{name: "busy", st: control.Status{State: "running", Queue: 3}, kind: kindSyncing,
 			tooltip: "Burrow: syncing, 3 queued", statusLine: "Running · 3 queued · no sync yet", toggle: "Pause uploads", canToggle: true, next: "/pause"},
+		{name: "restoring", st: control.Status{State: "running", RestoreDone: 12, RestoreTotal: 340}, kind: kindSyncing,
+			tooltip: "Burrow: Downloading 12 of 340 from Drive…", statusLine: "Downloading 12 of 340 from Drive…", toggle: "Pause uploads", canToggle: true, next: "/pause"},
 		{name: "paused", st: control.Status{State: "paused", Queue: 5, LastSync: "2026-10-11T11:55:00Z"}, kind: kindPaused,
 			tooltip: "Burrow: paused, 5 queued", statusLine: "Paused · 5 queued · last sync 5m ago", toggle: "Resume uploads", canToggle: true, next: "/resume"},
 		{name: "not running", err: control.ErrNoDaemon, kind: kindStopped,

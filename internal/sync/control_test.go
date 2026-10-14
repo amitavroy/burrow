@@ -139,3 +139,21 @@ func TestControlAPIDebugAndErrors(t *testing.T) {
 		t.Errorf("errors = %+v, %v", errs, err)
 	}
 }
+
+func TestControlStatusCarriesRestoreProgress(t *testing.T) {
+	sock, c := shortSock(t), &Control{}
+	serve(t, sock, c, 0)
+	ctx := context.Background()
+
+	if st, _ := control.Request(ctx, sock, "GET", "/status"); st.RestoreTotal != 0 {
+		t.Errorf("idle status = %+v", st)
+	}
+	c.restoreProgress(12, 340)
+	if st, _ := control.Request(ctx, sock, "GET", "/status"); st.RestoreDone != 12 || st.RestoreTotal != 340 {
+		t.Errorf("restoring status = %+v", st)
+	}
+	c.restoreProgress(0, 0)
+	if st, _ := control.Request(ctx, sock, "GET", "/status"); st.RestoreTotal != 0 {
+		t.Errorf("done status = %+v", st)
+	}
+}

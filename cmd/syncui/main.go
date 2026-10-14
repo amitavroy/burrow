@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -16,6 +17,7 @@ import (
 
 	"fyne.io/systray"
 
+	"github.com/amitavroy/burrow/internal/autostart"
 	"github.com/amitavroy/burrow/internal/control"
 	"github.com/amitavroy/burrow/internal/store"
 )
@@ -23,6 +25,14 @@ import (
 const pollEvery = 2 * time.Second
 
 func main() {
+	lock, ok := acquire(lockPath())
+	if !ok {
+		return // a tray is already running; one icon is enough
+	}
+	if lock != nil {
+		defer lock.Unlock()
+	}
+	registerAutostart(autostart.DefaultEnv(), selfPath(), os.TempDir())
 	systray.Run(onReady, func() {})
 }
 
@@ -35,7 +45,7 @@ func onReady() {
 	mAccount.Disable()
 	mSignIn := systray.AddMenuItem("Sign in…", "Opens your browser to sign in to Google")
 	mSignOut := systray.AddMenuItem("Sign out", "Forget this Google account on this computer")
-	mStart := systray.AddMenuItem("Start syncing", "Install and start the sync service")
+	mStart := systray.AddMenuItem("Start syncing", "Install and start the sync service (signing in does this too)")
 	mToggle := systray.AddMenuItem("Pause uploads", "Stop starting new uploads; the queue keeps filling")
 	systray.AddSeparator()
 	mErrors := systray.AddMenuItem("No errors", "Files that failed to sync")

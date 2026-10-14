@@ -23,6 +23,8 @@ type Control struct {
 	paused   atomic.Bool
 	lastSync atomic.Int64 // Unix nanoseconds of the last job that finished without an error; 0 = none yet
 
+	restoreDone, restoreTotal atomic.Int64 // first-run restore progress; total 0 = not restoring
+
 	// Optional, set before ServeControl. Level is the daemon's log level, which
 	// POST /debug flips between debug and info; Errors feeds GET /errors.
 	Level  *slog.LevelVar
@@ -45,6 +47,22 @@ func (c *Control) LastSync() time.Time {
 		return time.Time{}
 	}
 	return time.Unix(0, c.lastSync.Load())
+}
+
+func (c *Control) restoreProgress(done, total int) {
+	if c != nil {
+		c.restoreDone.Store(int64(done))
+		c.restoreTotal.Store(int64(total))
+	}
+}
+
+// RestoreProgress is how many files the first-run restore has handled and how
+// many it will, or 0, 0 when none is running.
+func (c *Control) RestoreProgress() (done, total int) {
+	if c == nil {
+		return 0, 0
+	}
+	return int(c.restoreDone.Load()), int(c.restoreTotal.Load())
 }
 
 func (c *Control) touch() {
@@ -89,6 +107,7 @@ func ServeControl(ctx context.Context, sock string, c *Control, info func(contex
 		if c.Paused() {
 			st.State = "paused"
 		}
+		st.RestoreDone, st.RestoreTotal = c.RestoreProgress()
 		st.Debug = c != nil && c.Level != nil && c.Level.Level() <= slog.LevelDebug
 		if t := c.LastSync(); !t.IsZero() {
 			st.LastSync = t.UTC().Format(time.RFC3339)

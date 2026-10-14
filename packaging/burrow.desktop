@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Burrow
+GenericName=Google Drive sync
+Comment=Show the Burrow sync status in the tray
+Exec=/usr/bin/syncui
+Icon=burrow
+Terminal=false
+Categories=Network;FileTransfer;
+Keywords=sync;drive;backup;

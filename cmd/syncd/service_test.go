@@ -397,3 +397,64 @@ func TestUninstallPurge(t *testing.T) {
 		t.Errorf("extra arg: code %d", code)
 	}
 }
+
+func TestStartAfterLoginInstallsTheServiceWithTheDefaultRoot(t *testing.T) {
+	f := useFakeOS(t, "linux")
+	f.withEnv(t)
+	var out, errb bytes.Buffer
+
+	startAfterLogin(&out, &errb)
+
+	unit, err := os.ReadFile(filepath.Join(f.config, "systemd", "user", "syncd.service"))
+	if err != nil || !strings.Contains(string(unit), `run --root "`+filepath.Join(f.config, "MySync")+`"`) {
+		t.Fatalf("unit = %q, %v", unit, err)
+	}
+	if got := strings.Join(f.cmds, "|"); got != "systemctl --user daemon-reload|systemctl --user enable --now syncd.service" {
+		t.Errorf("commands = %s", got)
+	}
+}
+
+// An installed service keeps its own root; sign-in only restarts it.
+func TestStartAfterLoginRestartsAnInstalledService(t *testing.T) {
+	f := useFakeOS(t, "linux")
+	f.withEnv(t)
+	var out, errb bytes.Buffer
+	custom := t.TempDir()
+	if code := serviceInstall(custom, &out, &errb); code != 0 {
+		t.Fatalf("install: %d %s", code, errb.String())
+	}
+	f.cmds = nil
+
+	startAfterLogin(&out, &errb)
+
+	if got := strings.Join(f.cmds, "|"); !strings.HasSuffix(got, "systemctl --user restart syncd.service") || strings.Contains(got, "enable --now") {
+		t.Errorf("commands = %s", got)
+	}
+	unit, _ := os.ReadFile(filepath.Join(f.config, "systemd", "user", "syncd.service"))
+	if !strings.Contains(string(unit), custom) {
+		t.Errorf("custom root lost: %s", unit)
+	}
+}
+
+// The sign-in worked, so a service problem is a warning, not a failed login.
+func TestStartAfterLoginWarnsWhenTheInstallFails(t *testing.T) {
+	f := useFakeOS(t, "linux") // no .env and no baked-in client
+	var out, errb bytes.Buffer
+
+	startAfterLogin(&out, &errb)
+
+	if !strings.Contains(errb.String(), "did not start") {
+		t.Errorf("stderr = %q", errb.String())
+	}
+	_ = f
+}
+
+func TestLoginRejectsBadFlags(t *testing.T) {
+	var out, errb bytes.Buffer
+	if code := login([]string{"--nope"}, &out, &errb); code != 2 {
+		t.Errorf("code = %d, want 2", code)
+	}
+	if code := login([]string{"extra"}, &out, &errb); code != 2 || !strings.Contains(errb.String(), "usage: syncd login") {
+		t.Errorf("code = %d, stderr %q", code, errb.String())
+	}
+}

@@ -64,5 +64,15 @@ nfpms:
         type: config|noreplace
         file_info:
           mode: 0644
+      # Makes "Burrow" searchable in the app menu, so the tray can be started at once
+      # after install, without a relogin.
+      - src: packaging/burrow.desktop
+        dst: /usr/share/applications/burrow.desktop
+        file_info:
+          mode: 0644
+      - src: packaging/burrow.png
+        dst: /usr/share/icons/hicolor/256x256/apps/burrow.png
+        file_info:
+          mode: 0644
     scripts:
       preremove: packaging/prerm.sh

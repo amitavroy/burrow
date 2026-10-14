@@ -39,6 +39,13 @@ func viewOf(st control.Status, err error, now time.Time) view {
 		return view{Kind: kindStopped, Tooltip: "Burrow: cannot reach syncd", StatusLine: "cannot reach syncd: " + err.Error(), Toggle: "Pause uploads"}
 	}
 	debug, root := st.Debug, st.Root
+	if st.RestoreTotal > 0 && st.State != "paused" {
+		line := fmt.Sprintf("Downloading %d of %d from Drive…", st.RestoreDone, st.RestoreTotal)
+		return view{
+			Kind: kindSyncing, Tooltip: "Burrow: " + line, StatusLine: line,
+			Toggle: "Pause uploads", CanToggle: true, next: "/pause", Debug: debug, Root: root,
+		}
+	}
 	queue := fmt.Sprintf("%d queued", st.Queue)
 	last := "no sync yet"
 	if t, perr := time.Parse(time.RFC3339, st.LastSync); perr == nil {

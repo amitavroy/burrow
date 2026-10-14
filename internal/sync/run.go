@@ -25,6 +25,13 @@ type RunOptions struct {
 	PollEvery  time.Duration // an idle worker looks for work at least this often; default 1s
 	Changes    *ChangeSource // applies edits made on Drive (Pull); nil: one-way, Drive edits are ignored
 
+	// Remote lists every file in Drive. With Changes set, Run calls it once, when
+	// no changes token is stored yet (a database that has never seen Drive), and
+	// restores the root from the list before it starts watching. nil: no restore.
+	Remote func(ctx context.Context) ([]drive.RemoteFile, error)
+	// OnRestore is called for each file the first-run restore handles.
+	OnRestore func(RestoreEvent)
+
 	// OnStart is called once the watch is up, with the number of directories
 	// watched. OnWatchError is called for each problem the watcher reports (a
 	// queue overflow, a folder that could not be watched); the run goes on.
@@ -64,6 +71,12 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 	// No other process uses the database, so a job still marked running is
 	// one a dead process left behind.
 	if _, err := repo.ResetRunningJobs(ctx); err != nil {
+		return err
+	}
+	if err := firstRunRestore(ctx, root, repo, opts); err != nil {
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			return nil // the caller cancelled: a normal stop; the restore resumes next start
+		}
 		return err
 	}
 	ignore, err := NewMatcher(root)
@@ -283,4 +296,60 @@ func Run(ctx context.Context, root string, repo *store.Repo, upload UploadFunc, 
 		return nil // the caller cancelled: a normal stop
 	}
 	return fatal
+}
+
+// firstRunRestore fills the root from Drive when the database has no changes
+// token, which means it has never seen Drive (a new machine, or the database
+// was deleted). It runs before the watcher starts, so the files it downloads
+// are never mistaken for local edits and uploaded back; a file the user adds
+// meanwhile is found by the reconcile that follows.
+//
+// The changes position is taken before the list, so an edit made in Drive
+// during the restore shows up in the first poll, and it is stored only after
+// the pass finishes: a stop in the middle restores again next start, and
+// Restore skips what is already in place. A file that failed is left in
+// sync_errors (run `syncd restore` to try it again); only a lost sign-in, a
+// cancel, or a failing database or Drive listing ends the pass, and then the
+// token stays unset so the next start tries again.
+func firstRunRestore(ctx context.Context, root string, repo *store.Repo, opts RunOptions) error {
+	src := opts.Changes
+	if src == nil || opts.Remote == nil {
+		return nil
+	}
+	if tok, _, err := repo.GetMeta(ctx, store.MetaChangesToken); err != nil || tok != "" {
+		return err
+	}
+	start, err := src.Start(ctx)
+	if err != nil {
+		return err
+	}
+	remote, err := opts.Remote(ctx)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return err
+	}
+	slog.Info("restoring from Drive", "files", len(remote))
+	done := 0
+	opts.Control.restoreProgress(0, len(remote))
+	defer opts.Control.restoreProgress(0, 0)
+	report := func(e RestoreEvent) {
+		done++
+		opts.Control.restoreProgress(done, len(remote))
+		if e.Err != nil {
+			if rerr := repo.RecordError(ctx, e.RelPath, drive.Describe(e.Err), e.Err.Error()); rerr != nil {
+				slog.Warn("could not record restore error", "rel", e.RelPath, "err", rerr)
+			}
+		}
+		if opts.OnRestore != nil {
+			opts.OnRestore(e)
+		}
+	}
+	sum, err := Restore(ctx, root, repo, remote, src.Download, report, RestoreOptions{Host: src.Host})
+	slog.Info("restore finished", "downloaded", sum.Downloaded, "matched", sum.Matched, "conflicts", sum.Conflicts, "failed", sum.Failed)
+	if err != nil {
+		return err
+	}
+	return repo.SetMeta(context.WithoutCancel(ctx), store.MetaChangesToken, start)
 }
