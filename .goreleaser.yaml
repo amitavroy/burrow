@@ -48,14 +48,14 @@ changelog:
 
 nfpms:
   - id: burrow
-    package_name: burrow
+    package_name: burrow-drive
     ids: [syncd, syncui]
     formats: [deb]
     maintainer: Amitav Roy <reachme@amitavroy.com>
     homepage: https://github.com/amitavroy/burrow
     description: Mirror a local folder to Google Drive (daemon and tray icon).
     bindir: /usr/bin
-    file_name_template: "burrow_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    file_name_template: "burrow-drive_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     contents:
       # Starts the tray for every user at their next login. A user's own
       # ~/.config/autostart file of the same name (written by `syncd service install`) wins.

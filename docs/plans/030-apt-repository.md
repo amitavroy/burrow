@@ -1,7 +1,7 @@
 # Publish an apt repository on GitHub Pages (GH-28)
 
-Source: conversation; follows GH-37 (release builds, plan 028), which already builds `burrow_<version>_linux_<arch>.deb` with `nfpms`. GitHub issue: #28.
-Done when: **`sudo apt install burrow` works on a clean Ubuntu machine from the Pages URL, and `apt upgrade` picks up the next release.**
+Source: conversation; follows GH-37 (release builds, plan 028), which already builds `burrow-drive_<version>_linux_<arch>.deb` with `nfpms`. GitHub issue: #28.
+Done when: **`sudo apt install burrow-drive` works on a clean Ubuntu machine from the Pages URL, and `apt upgrade` picks up the next release.**
 Final location: `docs/plans/030-apt-repository.md` (same format as `docs/plans/archive/027-*.md`).
 
 ## To-do
@@ -11,13 +11,13 @@ Vertical slices; review after each. Every slice leaves `make vet test` green.
 | # | Slice | Step | Done |
 | --- | --- | --- | --- |
 | 1 | **Slice 1: a signed repo you can install from locally** | Make the GPG key (`gpg --quick-generate-key "Burrow apt <reachme@amitavroy.com>" ed25519 sign never`), back up the private key outside the repo, export the public key to `packaging/apt/burrow.gpg` (dearmored). `scripts/apt-repo.sh <deb dir> <out dir>`: copies the `.deb` files into `<out>/pool/main/`, writes `dists/stable/main/binary-{amd64,arm64}/Packages(.gz)` with `apt-ftparchive packages`, `dists/stable/Release` with `apt-ftparchive release` (Origin, Label, Suite `stable`, Architectures, Components), then `InRelease` (`gpg --clearsign`) and `Release.gpg` (`gpg -abs`). Copies `burrow.gpg` to `<out>/burrow.gpg`. **Review point (demo: build into `/tmp/apt-test`, add `deb [signed-by=/tmp/apt-test/burrow.gpg] file:///tmp/apt-test stable main`, `sudo apt update`, `apt-cache policy burrow` shows the new version).** | [ ] |
-| 2 | **Slice 2: published on GitHub Pages** | Create the orphan `gh-pages` branch, enable Pages for it (`gh api -X POST repos/amitavroy/burrow/pages -f 'source[branch]=gh-pages' -f 'source[path]=/'`), add `.nojekyll`. `make apt-repo`: runs the script against `dist/*.deb` into a `git worktree` of `gh-pages`, commits and pushes. **Review point (demo: `sudo apt remove burrow`, add the real source line with `https://amitavroy.github.io/burrow`, `sudo apt update && sudo apt install burrow`, `syncd version`).** | [ ] |
+| 2 | **Slice 2: published on GitHub Pages** | Create the orphan `gh-pages` branch, enable Pages for it (`gh api -X POST repos/amitavroy/burrow/pages -f 'source[branch]=gh-pages' -f 'source[path]=/'`), add `.nojekyll`. `make apt-repo`: runs the script against `dist/*.deb` into a `git worktree` of `gh-pages`, commits and pushes. **Review point (demo: `sudo apt remove burrow-drive`, add the real source line with `https://amitavroy.github.io/burrow`, `sudo apt update && sudo apt install burrow-drive`, `syncd version`).** | [ ] |
 | 3 | **Slice 3: part of every release** | `make publish` calls `make apt-repo` after `make release`, so one command does tag, GitHub release and apt repo. `make apt-repo` keeps the pool to the last 5 versions so the branch does not grow forever. **Review point (demo: publish the next patch version, then `sudo apt update && apt list --upgradable` shows `burrow`, and `sudo apt upgrade` installs it).** | [ ] |
-| 4 | **Slice 4: docs** | README Install: the three commands (fetch key to `/etc/apt/keyrings/burrow.gpg`, add `/etc/apt/sources.list.d/burrow.list` with `signed-by`, `apt update && apt install burrow`); wiki "Release builds" section (what `make apt-repo` does, where the key lives, how to rotate it later); `make help` descriptions. **Review point.** | [ ] |
+| 4 | **Slice 4: docs** | README Install: the three commands (fetch key to `/etc/apt/keyrings/burrow.gpg`, add `/etc/apt/sources.list.d/burrow.list` with `signed-by`, `apt update && apt install burrow-drive`); wiki "Release builds" section (what `make apt-repo` does, where the key lives, how to rotate it later); `make help` descriptions. **Review point.** | [ ] |
 
 ## Context
 
-A release already produces `.deb` files (GH-37), but users have to find the GitHub release, download the right architecture and install it by hand, and they get no updates. An apt repository makes it `apt install burrow` and `apt upgrade`. Repo hosting is static files, which GitHub Pages serves for free.
+A release already produces `.deb` files (GH-37), but users have to find the GitHub release, download the right architecture and install it by hand, and they get no updates. An apt repository makes it `apt install burrow-drive` and `apt upgrade`. Repo hosting is static files, which GitHub Pages serves for free.
 
 ## Decisions
 
@@ -56,7 +56,7 @@ gpg --default-key "$KEY" -abs -o dists/stable/Release.gpg dists/stable/Release
 sudo install -d /etc/apt/keyrings
 sudo curl -fsSL https://amitavroy.github.io/burrow/burrow.gpg -o /etc/apt/keyrings/burrow.gpg
 echo "deb [signed-by=/etc/apt/keyrings/burrow.gpg] https://amitavroy.github.io/burrow stable main" | sudo tee /etc/apt/sources.list.d/burrow.list
-sudo apt update && sudo apt install burrow
+sudo apt update && sudo apt install burrow-drive
 ```
 
 ## Files to create/modify

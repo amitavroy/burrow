@@ -48,5 +48,5 @@ purge: ## Remove every trace: service, tray, token, app data, the .deb, local bu
 	-$$(command -v syncd || echo bin/syncd) uninstall --purge
 	-pkill -x syncui
 	-pkill -x syncd
-	-sudo apt-get remove --purge -y burrow
+	-sudo apt-get remove --purge -y burrow-drive
 	rm -rf bin dist
